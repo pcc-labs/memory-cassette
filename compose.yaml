@@ -1,0 +1,65 @@
+# A tapes deployment with the memory cassette in it: Postgres, the tapes API,
+# and the Python cassette beside it.
+#
+# A cassette is only observable through core. Started alone this is an HTTP
+# server with an OpenAPI document and nothing to fetch it; started here, tapes
+# admits it, republishes its paths under /v1/cassettes/memory, and answers for
+# it in discovery.
+#
+#   docker compose up --build -d
+#   curl localhost:8082/v1/cassettes
+#
+# Only the tapes API is run, not `tapes serve`: the proxy needs an LLM upstream
+# and no cassette surface goes through it.
+name: tapes-memory-cassette
+
+services:
+  postgres:
+    image: public.ecr.aws/g4e5l3z3/papercomputeco/postgres:17.7-pgduckdb-1.1.1
+    environment:
+      POSTGRES_DB: tapes
+      POSTGRES_USER: tapes
+      POSTGRES_PASSWORD: tapes
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -h forces TCP. During initdb Postgres runs a temporary server on the
+      # unix socket only, so a bare pg_isready reports healthy seconds before
+      # anything can connect over the network, and dependents die on a refused
+      # connection.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U tapes -d tapes"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  memory:
+    build: .
+    ports:
+      - "127.0.0.1:9998:9998"
+    environment:
+      CASSETTE_NAME: memory
+    # No database. This cassette declares no owned tables and no contract
+    # views, so the deployment has nothing to provision for it yet.
+
+  tapes:
+    # A released core, not a local build. A cassette never depends on the tapes
+    # source tree, and pinning the tag is what makes "which contract does this
+    # run against" answerable. v0.34.0 is the release that added MCP cassettes.
+    image: public.ecr.aws/g4e5l3z3/papercomputeco/tapes:v0.34.0
+    command: >-
+      serve api
+      --listen 0.0.0.0:8082
+      --postgres postgres://tapes:tapes@postgres:5432/tapes?sslmode=disable
+      --cassettes http://memory:9998/openapi
+      --cassette-refresh 10s
+    ports:
+      - "127.0.0.1:8082:8082"
+    # `memory` is deliberately not a dependency: core retries an unresolved
+    # source through startup and on every refresh, so a cassette that is slow
+    # or briefly broken is an ordinary state rather than a boot failure.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

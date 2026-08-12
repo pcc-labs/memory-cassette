@@ -1,0 +1,60 @@
+# The memory cassette's publishable manifest.
+#
+# This is the authored form of the metadata served at /openapi under the
+# `x-tapes-cassette` extension. A registry or orchestrator reads this file
+# before anything is running; tapes core reads none of it. The copy that
+# matters for admission is the one in manifest.py, and the two must agree.
+#
+# The dependency points one way. This declares `depends.core = "v1"`, a
+# contract major rather than a tapes release, and a core decides for itself
+# whether it serves that contract.
+
+kind = "cassette/v1alpha1"
+
+# `name` is the identity everything derives from: the route
+# (/v1/cassettes/memory), the Postgres schema ("memory"), and the role
+# ("cassette_memory").
+[cassette]
+name = "memory"
+version = "0.0.1"
+display_name = "Memory"
+description = "Derived agent memory. Ingests paperplane reflections and dreams; recall is exposed to agents over MCP."
+license = "Apache-2.0"
+homepage = "https://github.com/papercomputeco/tapes"
+image = "papercompute/memory-cassette:0.0.1"
+port = 9998
+
+# Contract views this cassette reads, and none yet: the admission spike proves
+# the contract works out-of-Go before taking a grant on tapes data. Step 2 adds
+# ["sessions", "spans"], which become SELECT on tapes_v1.<view>.
+#
+# `raw_turns` may never be listed here. Core refuses the manifest outright if
+# it is, which is the boundary that keeps memory derived from the read model.
+[depends]
+core = "v1"
+views = []
+
+# Where core finds things on this cassette's own listener. `prefix_path` is the
+# load-bearing one: this process serves under /api/memory, core republishes at
+# /v1/cassettes/memory, and declaring it makes that swap a stated fact.
+[api]
+health = "/ping"
+openapi = "/openapi"
+prefix_path = "api"
+
+# No owned tables. A cassette normally declares them here and runs its own
+# migrations, but the Cognee-backed build lets Cognee own persistence across
+# its relational, vector, and graph layers, so there is no schema for a
+# deployment to provision.
+
+[[config]]
+key = "cognee_base_url"
+type = "string"
+default = "http://cognee:8000"
+description = "Base URL of the self-hosted Cognee instance. Must never point at Cognee Cloud."
+
+[[config]]
+key = "review_required"
+type = "bool"
+default = true
+description = "Withhold entries from recall until a human accepts them."
