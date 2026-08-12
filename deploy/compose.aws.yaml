@@ -4,7 +4,7 @@
 #
 # Tapes runs here too, not just the cassette. A cassette is only reachable
 # through a core, so hosting the cassette alone would still require a tapes
-# running somewhere else — and paperplane's memory base points at a tapes, not
+# running somewhere else — and a client's memory base points at a tapes, not
 # at a cassette.
 name: memory-cassette
 

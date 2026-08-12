@@ -107,7 +107,7 @@ def test_get_by_id_finds_what_save_wrote(store, mod):
     assert store.get("nope") is None
 
 
-def test_counts_only_tally_the_two_review_states_the_console_shows(store, mod):
+def test_counts_only_tally_the_two_review_states_a_review_ui_shows(store, mod):
     store.save(entry(mod, session_id="a", review="accepted"))
     store.save(entry(mod, session_id="b", review="proposed"))
     store.save(entry(mod, session_id="c", review="rejected"))

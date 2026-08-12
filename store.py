@@ -24,8 +24,8 @@ MemoryReview = Literal["proposed", "accepted", "rejected"]
 
 
 class Entry(BaseModel):
-    """One derived memory. Field names mirror the console's Zod schema
-    (src/lib/memory/schemas.ts) so the front end works unchanged."""
+    """One derived memory. Field names mirror the `/v1/memory` client
+    contract so an existing review UI works unchanged."""
 
     id: str
     kind: MemoryKind
@@ -74,7 +74,7 @@ class MemoryStore:
 
     def save(self, entry: Entry) -> Entry:
         key = (entry.session_id, entry.kind)
-        # Identity is stable across a revision: the console links to an entry by
+        # Identity is stable across a revision: a client links to an entry by
         # id, so a re-save under an existing key keeps the id it was given.
         existing = self._rows.get(key)
         if existing is not None:

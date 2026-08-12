@@ -6,20 +6,20 @@ in-process plugin. That is what lets the eventual Cognee build call the Cognee
 SDK directly instead of proxying to it.
 
 Status: admission spike. The store is in memory and Cognee is not wired up yet.
-The routes are written against the console's `/v1/memory` contract so swapping
-the store does not change them.
+The routes are written against a pre-existing `/v1/memory` client contract so
+swapping the store does not change them.
 
 ## How memories work
 
 ```
   1  CAPTURE                  2  REFLECT                       3  STORE
   ---------                   ----------                       --------
-  an agent run,               paperplane, on the console       this cassette
-  captured by tapes           session page, reflects twice
+  an agent run,               a client reflects on the         this cassette
+  captured by tapes           session, often more than once
 
    [ session ] ----------->   t+0s   template pass  (free)
-                 read via     t+15s  LLM upgrade    (better)
-                 paperd                   |
+                              t+15s  LLM upgrade    (better)
+                                          |
                                           |  POST /ingest/dream, once per pass
                                           v
                         +-------------------------------------------+
@@ -47,10 +47,10 @@ the store does not change them.
 
 Two properties worth stating, because both are load-bearing.
 
-**A session's memory is revised, not accumulated.** Paperplane reflects the same
-session on every page load and again on every regenerate. Those are revisions of
-one judgment, so they collapse onto one entry per `(sessionId, kind)`. The entry
-keeps its `id` and `firstSeenAt` across a revision, so a link to it stays valid.
+**A session's memory is revised, not accumulated.** A client may reflect the
+same session many times over. Those are revisions of one judgment, so they
+collapse onto one entry per `(sessionId, kind)`. The entry keeps its `id` and
+`firstSeenAt` across a revision, so a link to it stays valid.
 
 **Nothing is recallable until a human accepts it.** And if a revision changes an
 already-accepted entry's text, it drops back to `proposed`. Otherwise prose
@@ -106,7 +106,7 @@ The container is stateless, since all state lives in Postgres. That makes it
 ordinary to host: any container platform plus a managed database works, and a
 redeploy loses nothing.
 
-Two region facts for **us-west-1**, which is where this is headed:
+Two region facts for **us-west-1**, where `deploy/aws.sh` lands:
 
 - **App Runner is not available there.** Nearest is us-west-2.
 - **Lightsail Containers and ECS Fargate are.** Lightsail nodes have only
@@ -135,34 +135,35 @@ box, real disk, and an allowlist. Lightsail is less work to host but publishes a
 public HTTPS endpoint with no IP allowlist, which is the opposite of what a
 personal memory store wants.
 
-None of this has been deployed yet. It is what the image needs, not a record of
-a running system.
+`deploy/aws.sh` is that path, scripted: one EC2 box, no inbound SSH (shell
+access goes through SSM), all three services under compose, and a security
+group that admits exactly one source address. `deploy/tunnel.sh` reaches the
+box from any network over an SSM port forward, for when that source address
+goes stale. Both scripts are the AWS path specifically; on any other host, the
+table above is the whole contract.
 
 ## What it does
 
 | Route | Purpose |
 | --- | --- |
-| `POST /ingest/dream` | Take paperplane's `dreamOnSession` output verbatim |
+| `POST /ingest/dream` | Take a client's dream output verbatim |
 | `GET /entries` | List by review state, kind, status, or substring |
 | `GET /entries/{id}` | Read one |
 | `POST /entries/{id}/review` | Accept or reject |
 | `POST /recall` | Search accepted memory. Published over MCP as `memory.recall` |
 
-Paperplane's dream output maps onto the console's existing kind enum with
-nothing left over: a reflection becomes an `observation`, a tip becomes a `tip`.
-Both land `proposed` and stay out of recall until a human accepts them.
+A dream payload maps onto the kind enum with nothing left over: a reflection
+becomes an `observation`, a tip becomes a `tip`. Both land `proposed` and stay
+out of recall until a human accepts them.
 
-## Wiring paperplane to it
+## Wiring a client to it
 
-`pcc-labs/paperplane` posts here. Set **Memory base** in its settings to
-`http://localhost:8082` (this stack) and every reflection it finishes lands in
-the proposed queue. Blank disables the push, which is the default.
-
-The hook wraps `putCachedReflection` in `src/content/console-reflect.js`, so all
-three reflection kinds are covered: the deterministic template, the LLM upgrade,
-and the stored server-side one. `src/api.js:toDreamPayload` flattens them into
-one payload, and the request goes through the service worker because a content
-script on the cloud console cannot reach loopback.
+Any client that produces reflections can post here: point its memory base at
+`http://localhost:8082` (this stack) or at the deployed address, and send each
+finished reflection to `POST /ingest/dream`. Revisions of the same session
+should reuse the `sessionId`, so they replace the earlier entry rather than
+pile up in the review queue. The payload shape is in the end-to-end check
+below; a client's own repo carries its wiring specifics.
 
 ## End-to-end check
 
@@ -208,7 +209,7 @@ or core refuses the document whole.
 ## Not done yet
 
 - **Cognee.** `[[config]] cognee_base_url` is declared and unused. The routes
-  were written against the console's contract so the backend can be swapped
+  were written against the client contract so the backend can be swapped
   without touching them.
 - **`depends.views` is empty**, so this reads none of tapes' own data. Adding
   `["sessions", "spans"]` takes SELECT grants on `tapes_v1.<view>`, which means
@@ -216,4 +217,4 @@ or core refuses the document whole.
   manifest outright.
 - **No authentication.** See the note above; the boundary is the network.
 - **No CI.** Nothing builds or publishes an image.
-- **The console still calls `/v1/memory/*`**, not `/v1/cassettes/memory/*`.
+- **Older clients may still call `/v1/memory/*`**, not `/v1/cassettes/memory/*`.

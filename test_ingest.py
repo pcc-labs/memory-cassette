@@ -37,7 +37,7 @@ def entries(review="proposed"):
 
 
 def test_reflecting_one_session_twice_keeps_one_entry_per_kind():
-    """Paperplane pushes twice per session: a deterministic template pass, then
+    """A client may push twice per session: a deterministic template pass, then
     an LLM upgrade ~15s later. Both describe the same session, so the second
     must supersede the first rather than pile up in the review queue."""
     client.post(INGEST, json=dream("sess_1", "Template prose.", "Template tip", "Template body"))
@@ -59,7 +59,7 @@ def test_the_later_reflection_wins():
 
 
 def test_identity_is_stable_across_a_re_reflection():
-    """The console links to an entry by id, so superseding must not mint a new
+    """A client links to an entry by id, so superseding must not mint a new
     one. firstSeenAt is when we first learned this, and does not move."""
     client.post(INGEST, json=dream("sess_1", "First.", "T", "B"))
     before = next(e for e in entries() if e["kind"] == "observation")

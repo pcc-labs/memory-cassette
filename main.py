@@ -71,7 +71,7 @@ class DreamTip(BaseModel):
 
 
 class DreamIngest(BaseModel):
-    """The output of paperplane's `dreamOnSession`, posted verbatim."""
+    """A client's dream output, posted verbatim."""
 
     sessionId: str
     observations: list[str] = Field(default_factory=list)
@@ -190,10 +190,10 @@ def upsert(
 ) -> MemoryEntry:
     """Write one memory for a session, superseding what that session said before.
 
-    Paperplane reflects the same session more than once: a deterministic
-    template pass on page load, then an LLM upgrade seconds later, plus another
-    pair on every manual regenerate. Those are revisions of one judgment, not
-    separate memories, so they collapse onto one entry per (session, kind).
+    A client reflects the same session more than once — a cheap first pass,
+    then an LLM upgrade seconds later, plus another pair on every manual
+    regenerate. Those are revisions of one judgment, not separate memories,
+    so they collapse onto one entry per (session, kind).
 
     The store keeps identity stable across a revision, so `id` and `firstSeenAt`
     survive and a link to an entry stays valid while its text changes.
@@ -229,14 +229,14 @@ def upsert(
 @app.post(
     f"{PREFIX}/ingest/dream",
     operation_id="ingestDream",
-    summary="Ingest a paperplane reflection and dream as memory entries",
+    summary="Ingest a client reflection and dream as memory entries",
     response_model=list[MemoryEntry],
     tags=[NAME],
 )
 def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
-    """Paperplane's dream output maps onto the console's existing kind enum
-    with nothing left over: a reflection is an `observation`, a tip is a `tip`.
-    Both land as `proposed` and wait for the review gate."""
+    """A dream payload maps onto the kind enum with nothing left over: a
+    reflection is an `observation`, a tip is a `tip`. Both land as `proposed`
+    and wait for the review gate."""
     stamp = now_iso()
 
     incoming: list[tuple[MemoryKind, str, str, float, dict[str, Any]]] = []
@@ -247,7 +247,7 @@ def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
                 body.reflection[:80],
                 body.reflection,
                 0.6,
-                {"source": "paperplane.reflection", "observations": body.observations},
+                {"source": "client.reflection", "observations": body.observations},
             )
         )
     if body.tip:
@@ -257,7 +257,7 @@ def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
                 body.tip.title,
                 body.tip.body,
                 0.7,
-                {"source": "paperplane.dream", "ruleId": body.tip.id},
+                {"source": "client.dream", "ruleId": body.tip.id},
             )
         )
 

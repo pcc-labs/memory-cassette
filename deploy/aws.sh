@@ -200,10 +200,11 @@ INSTANCE=$(aws ec2 run-instances --region "$REGION" \
 say "Launched $INSTANCE; waiting for it to run"
 aws ec2 wait instance-running --region "$REGION" --instance-ids "$INSTANCE"
 
-# An Elastic IP, because the address is baked into two places that are annoying
-# to change: paperplane's memory base, and its manifest host_permissions, which
-# needs a rebuild and an extension reload. A default public IP is released on
-# every stop, so without this a reboot silently breaks the browser extension.
+# An Elastic IP, because the address gets baked into clients that are annoying
+# to update — a browser-extension client carries it in both its memory base and
+# its manifest host_permissions, which needs a rebuild and a reload. A default
+# public IP is released on every stop, so without this a reboot silently breaks
+# every client holding the old address.
 ALLOC=$(aws ec2 describe-addresses --region "$REGION" --filters "Name=tag:Name,Values=$NAME" \
   --query 'Addresses[0].AllocationId' --output text 2>/dev/null || echo None)
 if [[ "$ALLOC" == "None" || -z "$ALLOC" ]]; then
@@ -228,11 +229,11 @@ cat <<DONE
 
     curl http://$IP:$PORT/v1/cassettes
 
-  Point paperplane's Memory base at http://$IP:$PORT
+  Point your client's memory base at http://$IP:$PORT
 
-  A browser extension also needs this address in its manifest
-  host_permissions, or the push is blocked by CORS with no useful error.
-  For paperplane that is "http://$IP/*" (match patterns ignore the port),
-  then rebuild and reload the extension.
+  A browser-extension client also needs this address in its manifest
+  host_permissions, or the push is blocked by CORS with no useful error:
+  add "http://$IP/*" (match patterns ignore the port), then rebuild and
+  reload the extension.
 
 DONE

@@ -32,10 +32,10 @@ def manifest(name: str) -> dict:
             "version": VERSION,
             "display_name": "Memory",
             "description": (
-                "Derived agent memory. Ingests paperplane reflections and "
+                "Derived agent memory. Ingests client reflections and "
                 "dreams; recall is exposed to agents over MCP."
             ),
-            "license": "Apache-2.0",
+            "license": "MIT",
             "homepage": "https://github.com/papercomputeco/tapes",
             "image": f"papercompute/memory-cassette:{VERSION}",
             "port": 9998,
