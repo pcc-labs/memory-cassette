@@ -39,6 +39,10 @@ if [[ "${1:-}" == "destroy" ]]; then
     aws ec2 terminate-instances --region "$REGION" --instance-ids $ids >/dev/null
     aws ec2 wait instance-terminated --region "$REGION" --instance-ids $ids
   fi
+  say "Releasing the Elastic IP"
+  alloc=$(aws ec2 describe-addresses --region "$REGION" --filters "Name=tag:Name,Values=$NAME" \
+    --query 'Addresses[0].AllocationId' --output text 2>/dev/null || echo None)
+  [[ "$alloc" != "None" && -n "$alloc" ]] && aws ec2 release-address --region "$REGION" --allocation-id "$alloc" || true
   say "Removing security group, role, and instance profile"
   sg=$(aws ec2 describe-security-groups --region "$REGION" --filters "Name=group-name,Values=$NAME" \
     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo None)
@@ -195,8 +199,22 @@ INSTANCE=$(aws ec2 run-instances --region "$REGION" \
 
 say "Launched $INSTANCE; waiting for it to run"
 aws ec2 wait instance-running --region "$REGION" --instance-ids "$INSTANCE"
-IP=$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE" \
-  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+
+# An Elastic IP, because the address is baked into two places that are annoying
+# to change: paperplane's memory base, and its manifest host_permissions, which
+# needs a rebuild and an extension reload. A default public IP is released on
+# every stop, so without this a reboot silently breaks the browser extension.
+ALLOC=$(aws ec2 describe-addresses --region "$REGION" --filters "Name=tag:Name,Values=$NAME" \
+  --query 'Addresses[0].AllocationId' --output text 2>/dev/null || echo None)
+if [[ "$ALLOC" == "None" || -z "$ALLOC" ]]; then
+  ALLOC=$(aws ec2 allocate-address --region "$REGION" --domain vpc \
+    --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=$NAME}]" \
+    --query AllocationId --output text)
+  say "Allocated Elastic IP $ALLOC"
+fi
+aws ec2 associate-address --region "$REGION" --instance-id "$INSTANCE" --allocation-id "$ALLOC" >/dev/null
+IP=$(aws ec2 describe-addresses --region "$REGION" --allocation-ids "$ALLOC" \
+  --query 'Addresses[0].PublicIp' --output text)
 
 cat <<DONE
 
@@ -211,5 +229,10 @@ cat <<DONE
     curl http://$IP:$PORT/v1/cassettes
 
   Point paperplane's Memory base at http://$IP:$PORT
+
+  A browser extension also needs this address in its manifest
+  host_permissions, or the push is blocked by CORS with no useful error.
+  For paperplane that is "http://$IP/*" (match patterns ignore the port),
+  then rebuild and reload the extension.
 
 DONE
