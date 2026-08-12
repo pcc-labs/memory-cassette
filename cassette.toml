@@ -42,10 +42,12 @@ health = "/ping"
 openapi = "/openapi"
 prefix_path = "api"
 
-# No owned tables. A cassette normally declares them here and runs its own
-# migrations, but the Cognee-backed build lets Cognee own persistence across
-# its relational, vector, and graph layers, so there is no schema for a
-# deployment to provision.
+# The table this cassette owns in its own schema. The declaration is for
+# whoever provisions the database: core neither creates the schema nor grants
+# access to it. See provision.sql for the role and grant, and store.py for the
+# migration the cassette runs against them at startup.
+[[tables]]
+name = "entries"
 
 [[config]]
 key = "cognee_base_url"

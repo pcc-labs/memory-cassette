@@ -14,9 +14,9 @@ Three admission rules shape this file:
   3. Every operation needs at least one response, and operation IDs must be
      unique within the cassette.
 
-The store is in-memory for the admission spike. Cognee replaces it without the
-routes changing, which is the point of writing them against the console's
-contract first.
+Persistence lives in store.py. Without TAPES_DATABASE_URL this runs on a
+volatile in-process store and says so at /ping, which is fine for a look
+around and wrong for anything hosted.
 """
 
 from __future__ import annotations
@@ -24,22 +24,20 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from manifest import VERSION, manifest
+from store import Entry as MemoryEntry
+from store import MemoryKind, MemoryReview, MemoryStatus, open_store
 
 NAME = os.environ.get("CASSETTE_NAME", "memory")
 PREFIX = f"/api/{NAME}"
 
-MemoryKind = Literal[
-    "bug", "decision", "gotcha", "preference", "todo", "tip", "observation", "anomaly"
-]
-MemoryStatus = Literal["open", "resolved"]
-MemoryReview = Literal["proposed", "accepted", "rejected"]
+store = open_store(os.environ.get("TAPES_DATABASE_URL", ""))
 
 
 def now_iso() -> str:
@@ -50,25 +48,6 @@ def slugify(text: str) -> str:
     keep = [c.lower() if c.isalnum() else "-" for c in text]
     parts = [p for p in "".join(keep).split("-") if p]
     return "-".join(parts)[:60] or "entry"
-
-
-class MemoryEntry(BaseModel):
-    """One derived memory. Field names mirror the console's Zod schema
-    (src/lib/memory/schemas.ts) so the front end works unchanged."""
-
-    id: str
-    kind: MemoryKind
-    slug: str
-    title: str
-    body: str
-    status: MemoryStatus = "open"
-    review: MemoryReview = "proposed"
-    confidence: float = Field(ge=0, le=1, default=0.5)
-    occurrenceCount: int = Field(ge=1, default=1)
-    sessionIds: list[str] = Field(default_factory=list)
-    attrs: dict[str, Any] = Field(default_factory=dict)
-    firstSeenAt: str
-    lastSeenAt: str
 
 
 class MemoryCounts(BaseModel):
@@ -82,7 +61,7 @@ class MemoryPage(BaseModel):
 
 
 class ReviewRequest(BaseModel):
-    review: Literal["accepted", "rejected"]
+    review: MemoryReview
 
 
 class DreamTip(BaseModel):
@@ -92,12 +71,7 @@ class DreamTip(BaseModel):
 
 
 class DreamIngest(BaseModel):
-    """The output of paperplane's `dreamOnSession`, posted verbatim.
-
-    Paperplane's own API client is read-only by design, so it does not write
-    here today. This endpoint is the write side that would let it, and it takes
-    the shape paperplane already produces rather than inventing a new one.
-    """
+    """The output of paperplane's `dreamOnSession`, posted verbatim."""
 
     sessionId: str
     observations: list[str] = Field(default_factory=list)
@@ -115,16 +89,6 @@ class RecallResponse(BaseModel):
     query: str
 
 
-STORE: dict[str, MemoryEntry] = {}
-
-
-def counts() -> MemoryCounts:
-    return MemoryCounts(
-        accepted=sum(1 for e in STORE.values() if e.review == "accepted"),
-        proposed=sum(1 for e in STORE.values() if e.review == "proposed"),
-    )
-
-
 app = FastAPI(
     title="Memory Cassette",
     version=VERSION,
@@ -139,7 +103,17 @@ app = FastAPI(
 
 @app.get("/ping", include_in_schema=False)
 def ping() -> Response:
-    return JSONResponse({"status": "ok", "cassette": NAME})
+    # `store` is the load-bearing field: on the volatile backend every memory
+    # dies with the process, and that should be visible from the health check
+    # rather than discovered after a restart.
+    return JSONResponse(
+        {
+            "status": "ok",
+            "cassette": NAME,
+            "store": "postgres" if store.durable else "memory",
+            "durable": store.durable,
+        }
+    )
 
 
 @app.get("/openapi", include_in_schema=False)
@@ -168,7 +142,7 @@ def list_entries(
     status: MemoryStatus | None = None,
     q: str | None = None,
 ) -> MemoryPage:
-    items = [e for e in STORE.values() if e.review == review]
+    items = [e for e in store.all() if e.review == review]
     if kind:
         items = [e for e in items if e.kind == kind]
     if status:
@@ -177,7 +151,7 @@ def list_entries(
         needle = q.lower()
         items = [e for e in items if needle in e.title.lower() or needle in e.body.lower()]
     items.sort(key=lambda e: e.lastSeenAt, reverse=True)
-    return MemoryPage(items=items, counts=counts())
+    return MemoryPage(items=items, counts=MemoryCounts(**store.counts()))
 
 
 @app.get(
@@ -188,7 +162,7 @@ def list_entries(
     tags=[NAME],
 )
 def get_entry(entry_id: str) -> MemoryEntry:
-    found = STORE.get(entry_id)
+    found = store.get(entry_id)
     if not found:
         raise HTTPException(status_code=404, detail="not found")
     return found
@@ -204,23 +178,11 @@ def get_entry(entry_id: str) -> MemoryEntry:
 def review_entry(entry_id: str, body: ReviewRequest) -> MemoryEntry:
     """The review gate is the safety property: only accepted entries leave the
     review queue, and only accepted entries are ever injected into agent
-    sessions. Cognee has no equivalent, so this is stored as node metadata and
-    filtered on recall."""
-    found = STORE.get(entry_id)
+    sessions."""
+    found = store.get(entry_id)
     if not found:
         raise HTTPException(status_code=404, detail="not found")
-    found.review = body.review
-    found.lastSeenAt = now_iso()
-    return found
-
-
-def find_entry(session_id: str, kind: MemoryKind) -> MemoryEntry | None:
-    """The entry a session already has of this kind, if any. Linear because the
-    store is small; a real backend indexes on (session, kind)."""
-    for entry in STORE.values():
-        if entry.kind == kind and session_id in entry.sessionIds:
-            return entry
-    return None
+    return store.save(found.model_copy(update={"review": body.review, "lastSeenAt": now_iso()}))
 
 
 def upsert(
@@ -233,44 +195,35 @@ def upsert(
     pair on every manual regenerate. Those are revisions of one judgment, not
     separate memories, so they collapse onto one entry per (session, kind).
 
-    Identity is stable across a revision. The console links to an entry by id
-    and `firstSeenAt` records when we first learned this, so neither moves.
+    The store keeps identity stable across a revision, so `id` and `firstSeenAt`
+    survive and a link to an entry stays valid while its text changes.
     """
-    existing = find_entry(session_id, kind)
-    if existing is None:
-        entry = MemoryEntry(
-            id=str(uuid.uuid4()),
+    existing = store.find(session_id, kind)
+    if existing is not None and existing.title == title and existing.body == text:
+        # Re-opening a session page re-fires the reflection. Identical content
+        # is not new information, so an acceptance already granted still stands.
+        return store.save(existing.model_copy(update={"lastSeenAt": stamp}))
+
+    return store.save(
+        MemoryEntry(
+            id=existing.id if existing else str(uuid.uuid4()),
             kind=kind,
             slug=slugify(title),
             title=title,
             body=text,
             status="open",
+            # The gate promises that only text a human accepted is recallable.
+            # New prose under an old acceptance would break that quietly, so a
+            # revision goes back for review.
             review="proposed",
             confidence=confidence,
             occurrenceCount=1,
             sessionIds=[session_id],
             attrs=attrs,
-            firstSeenAt=stamp,
+            firstSeenAt=existing.firstSeenAt if existing else stamp,
             lastSeenAt=stamp,
         )
-        STORE[entry.id] = entry
-        return entry
-
-    existing.lastSeenAt = stamp
-    if existing.title == title and existing.body == text:
-        # Re-opening a session page re-fires the reflection. Identical content
-        # is not new information, so an acceptance already granted still stands.
-        return existing
-
-    existing.title = title
-    existing.body = text
-    existing.slug = slugify(title)
-    existing.confidence = confidence
-    existing.attrs = attrs
-    # The gate promises that only text a human accepted is recallable. New
-    # prose under an old acceptance would break that quietly, so it goes back.
-    existing.review = "proposed"
-    return existing
+    )
 
 
 @app.post(
@@ -286,7 +239,7 @@ def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
     Both land as `proposed` and wait for the review gate."""
     stamp = now_iso()
 
-    incoming: list[tuple[MemoryKind, str, str, float, dict]] = []
+    incoming: list[tuple[MemoryKind, str, str, float, dict[str, Any]]] = []
     if body.reflection:
         incoming.append(
             (
@@ -312,10 +265,7 @@ def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
 
     # A later pass can come back without a tip. The old tip was derived from a
     # reflection that no longer stands, so it does not outlive it.
-    kinds = {kind for kind, *_ in incoming}
-    for entry_id, entry in list(STORE.items()):
-        if body.sessionId in entry.sessionIds and entry.kind not in kinds:
-            del STORE[entry_id]
+    store.delete_kinds_except(body.sessionId, {kind for kind, *_ in incoming})
 
     return written
 
@@ -343,7 +293,7 @@ def recall(body: RecallRequest) -> RecallResponse:
     needle = body.query.lower()
     items = [
         e
-        for e in STORE.values()
+        for e in store.all()
         if e.review == "accepted"
         and (needle in e.title.lower() or needle in e.body.lower())
     ]

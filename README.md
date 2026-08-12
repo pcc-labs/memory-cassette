@@ -82,6 +82,62 @@ make help
 
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
 
+## Where memories are kept
+
+Postgres, in a schema this cassette owns and migrates itself (`store.py`). Core
+creates nothing and never holds the credential: `provision.sql` makes the role
+and grant, `cassette.toml` declares the table, and the cassette builds it at
+startup.
+
+Without `TAPES_DATABASE_URL` it falls back to an in-process store, so you can
+try it with no database. That store is volatile, and `/ping` says which one
+answered, because a memory service that forgets is worth noticing early:
+
+```json
+{"status":"ok","cassette":"memory","store":"postgres","durable":true}
+```
+
+Treat `"durable": false` as fine for a look around and wrong for anything
+hosted.
+
+## Running it on AWS
+
+The container is stateless, since all state lives in Postgres. That makes it
+ordinary to host: any container platform plus a managed database works, and a
+redeploy loses nothing.
+
+Two region facts for **us-west-1**, which is where this is headed:
+
+- **App Runner is not available there.** Nearest is us-west-2.
+- **Lightsail Containers and ECS Fargate are.** Lightsail nodes have only
+  ephemeral storage, which no longer disqualifies them now that nothing is kept
+  on disk.
+
+What it needs, wherever it runs:
+
+| | |
+| --- | --- |
+| `TAPES_DATABASE_URL` | Postgres DSN. RDS, Lightsail managed database, or a container |
+| `CASSETTE_NAME` | defaults to `memory`; drives route, schema, and role names |
+| port | 9998 |
+| reachability | the tapes core that registers it must be able to fetch `/openapi` |
+
+Core fetches that document with **no redirects followed**, and the API and the
+document must share an origin. So nothing that bounces through a login can sit
+in front of it: no auth-redirecting ALB, and no serving the document from a CDN
+while the API lives elsewhere.
+
+**On locking it down.** The cassette has no authentication of its own. Anything
+that can reach it can read and write your memory, so the access boundary has to
+come from the network. A single EC2 instance running this compose file, with a
+security group restricted to your own address, is the shortest path to that: one
+box, real disk, and an allowlist. Lightsail is less work to host but publishes a
+public HTTPS endpoint with no IP allowlist, which is the opposite of what a
+personal memory store wants.
+
+None of this has been deployed yet. It is what the image needs, not a record of
+a running system.
+
 ## What it does
 
 | Route | Purpose |
@@ -151,8 +207,13 @@ or core refuses the document whole.
 
 ## Not done yet
 
-- Cognee. `[[config]] cognee_base_url` is declared and unused.
-- `depends.views`. Empty, so this reads none of tapes' data. Adding
-  `["sessions", "spans"]` takes SELECT grants on `tapes_v1.<view>` and needs a
-  `provision.sql`. `raw_turns` may never be listed.
-- The console still calls `/v1/memory/*`, not `/v1/cassettes/memory/*`.
+- **Cognee.** `[[config]] cognee_base_url` is declared and unused. The routes
+  were written against the console's contract so the backend can be swapped
+  without touching them.
+- **`depends.views` is empty**, so this reads none of tapes' own data. Adding
+  `["sessions", "spans"]` takes SELECT grants on `tapes_v1.<view>`, which means
+  extending `provision.sql`. `raw_turns` may never be listed: core refuses the
+  manifest outright.
+- **No authentication.** See the note above; the boundary is the network.
+- **No CI.** Nothing builds or publishes an image.
+- **The console still calls `/v1/memory/*`**, not `/v1/cassettes/memory/*`.

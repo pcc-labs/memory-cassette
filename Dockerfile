@@ -5,9 +5,10 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     "fastapi==0.121.2" \
     "uvicorn[standard]==0.42.0" \
-    "pydantic==2.13.1"
+    "pydantic==2.13.1" \
+    "psycopg[binary]==3.2.12"
 
-COPY manifest.py main.py ./
+COPY manifest.py store.py main.py ./
 
 ENV CASSETTE_NAME=memory
 EXPOSE 9998

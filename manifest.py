@@ -50,11 +50,9 @@ def manifest(name: str) -> dict:
             "prefix_path": "api",
         },
         # Declared, not created. Core publishes this and does nothing about it;
-        # the deployment provisions the schema and role, and the cassette runs
-        # its own migrations. Left empty here because the Cognee-backed build
-        # lets Cognee own persistence across its own relational, vector, and
-        # graph layers.
-        "tables": [],
+        # the deployment provisions the schema and role (see provision.sql) and
+        # the cassette runs its own migration at startup (store.py: DDL).
+        "tables": [{"name": "entries"}],
         "config": [
             {
                 "key": "cognee_base_url",

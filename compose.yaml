@@ -22,6 +22,9 @@ services:
       POSTGRES_PASSWORD: tapes
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Creates the cassette's role. Postgres runs this once, when the data
+      # directory is first initialized: `make down ARGS=-v` to re-run it.
+      - ./provision.sql:/docker-entrypoint-initdb.d/10-cassette-role.sql:ro
     healthcheck:
       # -h forces TCP. During initdb Postgres runs a temporary server on the
       # unix socket only, so a bare pg_isready reports healthy seconds before
@@ -38,8 +41,15 @@ services:
       - "127.0.0.1:9998:9998"
     environment:
       CASSETTE_NAME: memory
-    # No database. This cassette declares no owned tables and no contract
-    # views, so the deployment has nothing to provision for it yet.
+      # The credential the deployment provisioned in provision.sql, under the
+      # role name the manifest derives. Tapes neither creates this role nor
+      # injects this value: the cassette declares what it needs and the thing
+      # that starts it supplies it. Set it empty to watch the same cassette
+      # fall back to its volatile store and say so at /ping.
+      TAPES_DATABASE_URL: ${MEMORY_DATABASE_URL:-postgres://cassette_memory:cassette@postgres:5432/tapes?sslmode=disable}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   tapes:
     # A released core, not a local build. A cassette never depends on the tapes
