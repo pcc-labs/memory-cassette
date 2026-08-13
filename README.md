@@ -142,6 +142,15 @@ box from any network over an SSM port forward, for when that source address
 goes stale. Both scripts are the AWS path specifically; on any other host, the
 table above is the whole contract.
 
+**On transport encryption.** The allowlist controls who can connect, not who
+can observe in transit: the deployed box serves plain HTTP, so request and
+response bodies cross the network in the clear. This repo deliberately ships
+no TLS story, because the right one depends on where you host it. If that
+matters for your deployment, either give the box a DNS name and put an
+auto-certifying proxy such as Caddy in front of it, or remove the public port
+entirely with Tailscale or another WireGuard mesh. The trade-offs are written
+up in [issue #1](https://github.com/pcc-labs/memory-cassette/issues/1).
+
 ## What it does
 
 | Route | Purpose |
