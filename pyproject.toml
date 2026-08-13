@@ -1,0 +1,75 @@
+[project]
+name = "memory-cassette"
+version = "0.1.0"
+description = "Derived agent memory over tapes sessions"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.121.2",
+    "pydantic>=2.13.1",
+    "psycopg[binary]>=3.2.12",
+    "uvicorn[standard]>=0.42.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+]
+
+# Flat app layout (main.py, store.py, manifest.py) -- nothing to build or install.
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "T20"]
+ignore = [
+    "E501",  # Long lines: SQL statements in store.py read better unwrapped
+    "N815",  # mixedCase fields: pydantic models mirror the camelCase JSON wire format
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = [
+    "F841",  # Unused variables in tests (fixtures, etc.)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = """
+    -q
+    --strict-markers
+    --tb=short
+    --cov=.
+    --cov-report=term-missing
+    --cov-fail-under=73
+"""
+testpaths = ["."]
+
+[tool.coverage.run]
+source = ["."]
+branch = true
+omit = [
+    "test_*.py",
+    "deploy/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+precision = 2
+show_missing = true
