@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
@@ -41,7 +41,7 @@ store = open_store(os.environ.get("TAPES_DATABASE_URL", ""))
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def slugify(text: str) -> str:
@@ -149,7 +149,9 @@ def list_entries(
         items = [e for e in items if e.status == status]
     if q:
         needle = q.lower()
-        items = [e for e in items if needle in e.title.lower() or needle in e.body.lower()]
+        items = [
+            e for e in items if needle in e.title.lower() or needle in e.body.lower()
+        ]
     items.sort(key=lambda e: e.lastSeenAt, reverse=True)
     return MemoryPage(items=items, counts=MemoryCounts(**store.counts()))
 
@@ -182,11 +184,19 @@ def review_entry(entry_id: str, body: ReviewRequest) -> MemoryEntry:
     found = store.get(entry_id)
     if not found:
         raise HTTPException(status_code=404, detail="not found")
-    return store.save(found.model_copy(update={"review": body.review, "lastSeenAt": now_iso()}))
+    return store.save(
+        found.model_copy(update={"review": body.review, "lastSeenAt": now_iso()})
+    )
 
 
 def upsert(
-    session_id: str, kind: MemoryKind, title: str, text: str, confidence: float, attrs: dict, stamp: str
+    session_id: str,
+    kind: MemoryKind,
+    title: str,
+    text: str,
+    confidence: float,
+    attrs: dict,
+    stamp: str,
 ) -> MemoryEntry:
     """Write one memory for a session, superseding what that session said before.
 

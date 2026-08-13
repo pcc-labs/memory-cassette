@@ -1,10 +1,10 @@
-# uv resolves the toolchain per-invocation, so there is no venv to create or
-# activate and no requirements file to drift from the Dockerfile.
-UV := uv run --quiet --with fastapi --with httpx --with pytest --with uvicorn --with 'psycopg[binary]'
+# Dependencies live in pyproject.toml and are pinned by uv.lock; uv run syncs
+# the environment (including the dev group) before every invocation.
+UV := uv run --quiet
 TEST_DB := memory-cassette-test-db
 TEST_DSN := postgres://postgres:test@127.0.0.1:55432/postgres
 
-.PHONY: help test test-pg run up down logs
+.PHONY: help test test-pg lint fmt hooks run up down logs
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -22,6 +22,18 @@ test-pg: ## Run the suite against a throwaway Postgres, including the durability
 		do printf '.'; sleep 0.5; done; echo
 	-@TAPES_DATABASE_URL=$(TEST_DSN) $(UV) pytest -q
 	@docker rm -f $(TEST_DB) >/dev/null
+
+lint: ## Ruff lint + format check
+	$(UV) ruff check .
+	$(UV) ruff format --check .
+
+fmt: ## Auto-fix lint issues and reformat
+	$(UV) ruff check --fix .
+	$(UV) ruff format .
+
+hooks: ## Install the pre-commit hook (ruff + tests with coverage)
+	git config core.hooksPath .githooks
+	chmod +x .githooks/*
 
 run: ## Serve the cassette alone on :9998 (no tapes; nothing will fetch /openapi)
 	$(UV) uvicorn main:app --host 127.0.0.1 --port 9998 --reload

@@ -15,7 +15,14 @@ from store import MemoryStore, PostgresStore, open_store
 DATABASE_URL = os.environ.get("TAPES_DATABASE_URL", "")
 
 
-def entry(store_mod, session_id="sess_1", kind="observation", title="T", body="B", review="proposed"):
+def entry(
+    store_mod,
+    session_id="sess_1",
+    kind="observation",
+    title="T",
+    body="B",
+    review="proposed",
+):
     return store_mod.Entry(
         id=f"{session_id}:{kind}",
         kind=kind,
@@ -52,14 +59,15 @@ else:
         pytest.param(
             make_postgres,
             id="postgres",
-            marks=pytest.mark.skip(reason="TAPES_DATABASE_URL not set; run `make test-pg`"),
+            marks=pytest.mark.skip(
+                reason="TAPES_DATABASE_URL not set; run `make test-pg`"
+            ),
         )
     )
 
 
 @pytest.fixture(params=BACKENDS)
 def store(request):
-    import store as store_mod
 
     s = request.param()
     s.clear()
@@ -133,7 +141,9 @@ def test_delete_kinds_except_leaves_other_sessions_alone(store, mod):
 # --- the property the whole change exists for --------------------------------
 
 
-@pytest.mark.skipif(not DATABASE_URL, reason="TAPES_DATABASE_URL not set; run `make test-pg`")
+@pytest.mark.skipif(
+    not DATABASE_URL, reason="TAPES_DATABASE_URL not set; run `make test-pg`"
+)
 def test_entries_outlive_the_process(mod):
     """A hosted memory service that forgets on restart is not a memory service.
     A second store object against the same database stands in for a redeploy."""

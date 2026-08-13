@@ -154,7 +154,9 @@ class PostgresStore:
 
     def get(self, entry_id: str) -> Entry | None:
         with self._conn.cursor() as cur:
-            cur.execute(f"SELECT entry FROM {SCHEMA}.entries WHERE id = %s", (entry_id,))
+            cur.execute(
+                f"SELECT entry FROM {SCHEMA}.entries WHERE id = %s", (entry_id,)
+            )
             row = cur.fetchone()
         return Entry.model_validate(row[0]) if row else None
 
@@ -175,7 +177,13 @@ class PostgresStore:
                                            to_jsonb({SCHEMA}.entries.id))
                 RETURNING entry
                 """,
-                (entry.session_id, entry.kind, entry.id, entry.review, Jsonb(entry.model_dump())),
+                (
+                    entry.session_id,
+                    entry.kind,
+                    entry.id,
+                    entry.review,
+                    Jsonb(entry.model_dump()),
+                ),
             )
             return Entry.model_validate(cur.fetchone()[0])
 
@@ -193,7 +201,10 @@ class PostgresStore:
                 "WHERE review IN ('accepted', 'proposed') GROUP BY review"
             )
             tally = dict(cur.fetchall())
-        return {"accepted": tally.get("accepted", 0), "proposed": tally.get("proposed", 0)}
+        return {
+            "accepted": tally.get("accepted", 0),
+            "proposed": tally.get("proposed", 0),
+        }
 
 
 def open_store(dsn: str):

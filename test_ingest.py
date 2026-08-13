@@ -40,7 +40,9 @@ def test_reflecting_one_session_twice_keeps_one_entry_per_kind():
     """A client may push twice per session: a deterministic template pass, then
     an LLM upgrade ~15s later. Both describe the same session, so the second
     must supersede the first rather than pile up in the review queue."""
-    client.post(INGEST, json=dream("sess_1", "Template prose.", "Template tip", "Template body"))
+    client.post(
+        INGEST, json=dream("sess_1", "Template prose.", "Template tip", "Template body")
+    )
     client.post(INGEST, json=dream("sess_1", "LLM prose.", "LLM tip", "LLM body"))
 
     items = entries()
@@ -49,7 +51,9 @@ def test_reflecting_one_session_twice_keeps_one_entry_per_kind():
 
 
 def test_the_later_reflection_wins():
-    client.post(INGEST, json=dream("sess_1", "Template prose.", "Template tip", "Template body"))
+    client.post(
+        INGEST, json=dream("sess_1", "Template prose.", "Template tip", "Template body")
+    )
     client.post(INGEST, json=dream("sess_1", "LLM prose.", "LLM tip", "LLM body"))
 
     observation = next(e for e in entries() if e["kind"] == "observation")
@@ -106,7 +110,10 @@ def test_an_identical_re_push_leaves_an_acceptance_alone():
     client.post(INGEST, json=dream("sess_1", "Same prose.", "T", "B"))
 
     assert len(entries("accepted")) == 1
-    assert next(e for e in entries("accepted") if e["kind"] == "observation")["body"] == "Same prose."
+    assert (
+        next(e for e in entries("accepted") if e["kind"] == "observation")["body"]
+        == "Same prose."
+    )
 
 
 def test_a_reflection_with_no_tip_does_not_strand_the_previous_one():
@@ -115,6 +122,9 @@ def test_a_reflection_with_no_tip_does_not_strand_the_previous_one():
     client.post(INGEST, json=dream("sess_1", "Prose.", "Stale tip", "Stale body"))
     assert any(e["kind"] == "tip" for e in entries())
 
-    client.post(INGEST, json={"sessionId": "sess_1", "observations": [], "reflection": "Prose only."})
+    client.post(
+        INGEST,
+        json={"sessionId": "sess_1", "observations": [], "reflection": "Prose only."},
+    )
 
     assert not any(e["kind"] == "tip" for e in entries())
