@@ -22,6 +22,7 @@ around and wrong for anything hosted.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -50,6 +51,39 @@ def slugify(text: str) -> str:
     return "-".join(parts)[:60] or "entry"
 
 
+# A title is the only thing a reader sees in the review queue, so it has to be
+# one line and short enough to scan a page of them.
+TITLE_MAX = 72
+
+
+def clean_title(text: str) -> str:
+    """One line, no runs of whitespace, cut on a word boundary if overlong."""
+    title = " ".join((text or "").split())
+    if len(title) <= TITLE_MAX:
+        return title
+    head = title[:TITLE_MAX].rsplit(" ", 1)[0].rstrip(" ,;:-—")
+    return head or title[:TITLE_MAX]
+
+
+def derive_title(reflection: str) -> str:
+    """Fallback title for a client that sent prose without one.
+
+    This is a compromise, not a title. The cassette runs no inference and will
+    not invent prose, so the best it can do is the reflection's first sentence
+    cut on a word boundary. Entries titled this way are marked
+    `attrs.titleSource = "derived"` so a reader can tell them from a title a
+    client actually wrote, and so the queue's weakest titles are findable
+    rather than blended in.
+
+    The predecessor here was `reflection[:80]`, which cut mid-word wherever the
+    80th character happened to land — every observation title was the opening
+    clause of its own body, and the queue was unreadable as a result.
+    """
+    prose = " ".join((reflection or "").split())
+    first_sentence = re.split(r"(?<=[.!?])\s", prose)[0]
+    return clean_title(first_sentence)
+
+
 class MemoryCounts(BaseModel):
     accepted: int
     proposed: int
@@ -76,6 +110,13 @@ class DreamIngest(BaseModel):
     sessionId: str
     observations: list[str] = Field(default_factory=list)
     reflection: str | None = None
+    # A headline for the reflection, written by whoever wrote the reflection.
+    # Optional so existing clients keep working, but it is the field that makes
+    # the review queue readable: a tip arrives with a title (see DreamTip) and
+    # reads fine, while an untitled reflection can only fall back to
+    # derive_title(). Clients that generate the reflection with a model should
+    # ask for this in the same call.
+    reflectionTitle: str | None = None
     tip: DreamTip | None = None
 
 
@@ -251,23 +292,38 @@ def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
 
     incoming: list[tuple[MemoryKind, str, str, float, dict[str, Any]]] = []
     if body.reflection:
+        # Prefer the client's own headline. Only fall back to deriving one, and
+        # say which happened: a derived title is provisional and a reviewer
+        # deserves to know that without diffing it against the body.
+        title = clean_title(body.reflectionTitle or "")
+        title_source = "client" if title else "derived"
+        if not title:
+            title = derive_title(body.reflection)
         incoming.append(
             (
                 "observation",
-                body.reflection[:80],
+                title,
                 body.reflection,
                 0.6,
-                {"source": "client.reflection", "observations": body.observations},
+                {
+                    "source": "client.reflection",
+                    "observations": body.observations,
+                    "titleSource": title_source,
+                },
             )
         )
     if body.tip:
         incoming.append(
             (
                 "tip",
-                body.tip.title,
+                clean_title(body.tip.title),
                 body.tip.body,
                 0.7,
-                {"source": "client.dream", "ruleId": body.tip.id},
+                {
+                    "source": "client.dream",
+                    "ruleId": body.tip.id,
+                    "titleSource": "client",
+                },
             )
         )
 
