@@ -5,10 +5,9 @@
 #
 # `deploy/aws.sh` assumes the image is already at
 # $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/memory-cassette:latest — this script is
-# what puts it there. It goes one step further than handoff-cassette's
-# push.sh, which stops after the push: aws.sh exits early once the box is
-# running ("already running... redeploy with aws ssm"), so a pushed image that
-# nothing pulls is not a deploy, and the pull was the part being hand-typed.
+# what puts it there, and now also what gets it running. aws.sh exits early
+# once the box is up ("already running... redeploy with aws ssm") without
+# touching the image, so a push alone leaves the box on the old code.
 #
 # Two things this exists to stop repeating:
 #
