@@ -142,6 +142,24 @@ box from any network over an SSM port forward, for when that source address
 goes stale. Both scripts are the AWS path specifically; on any other host, the
 table above is the whole contract.
 
+`deploy/push.sh` is how new code gets there:
+
+```sh
+./deploy/push.sh                 # build linux/arm64, push to ECR, roll the box
+./deploy/push.sh --no-restart    # build and push only
+```
+
+Use it rather than re-running `aws.sh` for a code change. `aws.sh` exits early
+once the box is up and never touches the image — but only after converging the
+security group, which revokes every allowlisted address that is not your
+current one. A redeploy has no business changing who can reach the box.
+
+`push.sh` recreates only the `memory` service; Postgres holds the entries and
+tapes fronts the cassette, so neither restarts. It also refreshes the box's ECR
+login before pulling: those tokens last 12 hours, and once one goes stale the
+pull fails with "repository does not exist or may require 'docker login'",
+which reads like a missing image rather than an expired credential.
+
 **On transport encryption.** The allowlist controls who can connect, not who
 can observe in transit: the deployed box serves plain HTTP, so request and
 response bodies cross the network in the clear. This repo deliberately ships
@@ -225,5 +243,6 @@ or core refuses the document whole.
   extending `provision.sql`. `raw_turns` may never be listed: core refuses the
   manifest outright.
 - **No authentication.** See the note above; the boundary is the network.
-- **No CI.** Nothing builds or publishes an image.
+- **No CI.** `deploy/push.sh` builds and publishes the image, but a human runs
+  it; nothing builds on merge, and no test gates a deploy.
 - **Older clients may still call `/v1/memory/*`**, not `/v1/cassettes/memory/*`.
