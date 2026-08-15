@@ -116,6 +116,142 @@ def test_an_identical_re_push_leaves_an_acceptance_alone():
     )
 
 
+# --- titles ------------------------------------------------------------------
+
+# The reflection that made the queue unreadable, kept verbatim: at 141
+# characters it is well past any title length, and its 80th character lands
+# mid-word inside "unfixed".
+REAL_REFLECTION = (
+    "Audited pokemon-kafka milestones and found gym-2 readiness blocked by an "
+    "unfixed Viridian Forest blackout — no runs launched, purely a review."
+)
+
+
+def observation_for(session_id, payload):
+    client.post(INGEST, json=payload)
+    return next(
+        e
+        for e in entries()
+        if e["kind"] == "observation" and session_id in e["sessionIds"]
+    )
+
+
+def test_the_clients_title_is_the_title():
+    """The client wrote the reflection, so the client writes its headline. The
+    cassette runs no inference and must not paraphrase what it was handed."""
+    observation = observation_for(
+        "sess_1",
+        {
+            "sessionId": "sess_1",
+            "reflection": REAL_REFLECTION,
+            "reflectionTitle": "Gym-2 blocked on the Viridian Forest blackout",
+        },
+    )
+    assert observation["title"] == "Gym-2 blocked on the Viridian Forest blackout"
+    assert observation["attrs"]["titleSource"] == "client"
+
+
+def test_an_untitled_reflection_no_longer_gets_a_mid_word_slice():
+    """The regression. Titling an observation `reflection[:80]` cut wherever
+    the 80th character landed — here, inside "unfixed" — so the queue read as
+    broken rather than terse.
+
+    The fallback is still a prefix of the body, because a service with no
+    inference has nothing better to derive from. That is the point of marking
+    it `derived`: the cassette cannot write a title, only a client can, and an
+    entry that never got one is findable rather than blended in.
+    """
+    observation = observation_for(
+        "sess_1", {"sessionId": "sess_1", "reflection": REAL_REFLECTION}
+    )
+    title = observation["title"]
+
+    assert title != REAL_REFLECTION[:80]
+    assert not title.endswith("unfixed"), "the old cut landed mid-word here"
+    assert len(title) <= main.TITLE_MAX
+    assert observation["attrs"]["titleSource"] == "derived"
+
+
+def test_derived_titles_are_filterable():
+    """A reviewer sorting out the weak titles, and the title eval sampling only
+    real ones, both need to tell the two apart without diffing against bodies."""
+    client.post(
+        INGEST,
+        json={
+            "sessionId": "sess_1",
+            "reflection": REAL_REFLECTION,
+            "reflectionTitle": "Gym-2 blocked on the Viridian Forest blackout",
+        },
+    )
+    client.post(INGEST, json={"sessionId": "sess_2", "reflection": REAL_REFLECTION})
+
+    sources = {
+        e["sessionIds"][0]: e["attrs"]["titleSource"]
+        for e in entries()
+        if e["kind"] == "observation"
+    }
+    assert sources == {"sess_1": "client", "sess_2": "derived"}
+
+
+def test_a_derived_title_ends_on_a_word_boundary():
+    """Whatever the fallback produces, it may not end mid-word: that is the
+    tell that made the old titles read as broken rather than terse."""
+    long_prose = "Provisioned " + "a very long clause about Confluent " * 6 + "today."
+    observation = observation_for(
+        "sess_1", {"sessionId": "sess_1", "reflection": long_prose}
+    )
+    title = observation["title"]
+    assert len(title) <= main.TITLE_MAX
+    # every word in the title survives intact in the source prose
+    assert title.split()[-1] in long_prose.split()
+
+
+def test_a_blank_client_title_falls_back_rather_than_titling_nothing():
+    observation = observation_for(
+        "sess_1",
+        {
+            "sessionId": "sess_1",
+            "reflection": REAL_REFLECTION,
+            "reflectionTitle": "   ",
+        },
+    )
+    assert observation["title"]
+    assert observation["attrs"]["titleSource"] == "derived"
+
+
+def test_an_overlong_tip_title_is_cut_on_a_word_boundary_too():
+    """Tips arrive titled, but nothing stops a model returning a sentence."""
+    client.post(
+        INGEST,
+        json={
+            "sessionId": "sess_1",
+            "reflection": "Prose.",
+            "tip": {
+                "id": "r",
+                "title": "Trace the turn-385 blackout before attempting any further "
+                "gym-2 work because the party cannot survive it at level 8",
+                "body": "B",
+            },
+        },
+    )
+    tip = next(e for e in entries() if e["kind"] == "tip")
+    assert len(tip["title"]) <= main.TITLE_MAX
+    assert tip["title"].split()[-1] in tip["title"]
+    assert not tip["title"].endswith(",")
+
+
+def test_clean_title_collapses_whitespace():
+    assert main.clean_title("  Gym-2   blocked\non the\tblackout ") == (
+        "Gym-2 blocked on the blackout"
+    )
+
+
+def test_derive_title_stops_at_the_first_sentence():
+    assert main.derive_title("Gym-2 is blocked. The blackout at turn 385 is why.") == (
+        "Gym-2 is blocked."
+    )
+
+
 def test_a_reflection_with_no_tip_does_not_strand_the_previous_one():
     """The LLM pass can come back without a tip. The earlier tip was derived
     from a reflection that no longer stands, so it must not outlive it."""
