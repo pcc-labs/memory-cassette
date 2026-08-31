@@ -5,9 +5,9 @@ because a cassette is an independently deployed HTTP service rather than an
 in-process plugin. That is what lets the eventual Cognee build call the Cognee
 SDK directly instead of proxying to it.
 
-Status: admission spike. The store is in memory and Cognee is not wired up yet.
-The routes are written against a pre-existing `/v1/memory` client contract so
-swapping the store does not change them.
+Status: running on a live Cognee engine, embedded in the process rather than
+proxied to. The routes are written against a pre-existing `/v1/memory` client
+contract, and swapping the store did not change one of them.
 
 ## How memories work
 
@@ -39,10 +39,21 @@ swapping the store does not change them.
   -------------                           ---------
 
      proposed --- Accept ---> accepted -----> GET  /entries?review=accepted
-         |                                    POST /recall
+         |                    + cognify       POST /recall
          |                                    MCP  memory.recall
          +------- Reject ---> rejected
                               (hidden, never recalled)
+
+
+  Each review state is a Cognee dataset, and only the accepted one is ever
+  cognified:
+
+        memory_proposed     memory_rejected        memory_accepted
+        (stored, no graph)  (stored, no graph)     (stored + KNOWLEDGE GRAPH)
+                                                          |
+                                                          v
+                                                    recall() reads
+                                                    here and nowhere else
 ```
 
 Two properties worth stating, because both are load-bearing.
@@ -57,16 +68,34 @@ already-accepted entry's text, it drops back to `proposed`. Otherwise prose
 nobody reviewed would inherit an old acceptance, which is exactly what the gate
 exists to prevent.
 
+With Cognee underneath, that second property stopped being a filter and became
+structural. Only the accepted dataset is ever cognified, so unreviewed prose is
+not in the knowledge graph for recall to surface by accident. A filter can be
+forgotten in a later refactor; an empty graph cannot.
+
 ## Run it
 
 ```bash
-make up                    # postgres + tapes + this cassette
+export LLM_API_KEY=sk-...   # Cognee builds the graph with an LLM
+make up                     # postgres + tapes + this cassette
 curl localhost:8082/v1/cassettes
 ```
 
 Three services: Postgres, a released `tapes serve api` on 8082, and this
-cassette on 9998. Tapes fetches `http://memory:9998/openapi` every 10s and
-republishes every path under `/v1/cassettes/memory/`.
+cassette on 9998, with Cognee running inside it. Tapes fetches
+`http://memory:9998/openapi` every 10s and republishes every path under
+`/v1/cassettes/memory/`.
+
+Cognee is embedded rather than run as a fourth service. A cassette is an
+independently deployed HTTP service precisely so it can call an SDK directly
+instead of proxying to one, so there is no second network hop and no second
+thing to secure. `LLM_API_KEY` is the only vendor credential: embeddings run
+locally through fastembed, so switching the LLM to Anthropic or anything else
+does not drag in a second provider.
+
+```bash
+LLM_PROVIDER=anthropic LLM_MODEL=claude-sonnet-4-5 LLM_API_KEY=sk-ant-... make up
+```
 
 Core is pinned to a published image (`tapes:v0.34.0`, the release that added MCP
 cassettes) rather than built from source. A cassette never depends on the tapes
@@ -74,53 +103,90 @@ tree, and pinning the tag is what makes "which contract does this run against"
 a question with an answer.
 
 ```bash
-make test                  # 7 tests, no venv to manage
+make test                  # the suite on the volatile store, no venv to manage
+make test-cognee           # the same suite against a real Cognee engine
 make down                  # stop        (ARGS=-v also drops the db volume)
 make logs                  # follow this cassette
 make help
 ```
 
+`make test-cognee` needs no API key and costs nothing. Ingesting, revising, and
+rejecting call no LLM — only accepting does — so the whole store contract runs
+against a real engine on its file-based defaults in a throwaway directory.
+
 Requires [uv](https://docs.astral.sh/uv/) and Docker.
 
 ## Where memories are kept
 
-Postgres, in a schema this cassette owns and migrates itself (`store.py`). Core
-creates nothing and never holds the credential: `provision.sql` makes the role
-and grant, `cassette.toml` declares the table, and the cassette builds it at
-startup.
+Cognee, which is the store rather than something behind it. The mapping is
+deliberate, because Cognee has its own model of the same problem:
 
-Without `TAPES_DATABASE_URL` it falls back to an in-process store, so you can
-try it with no database. That store is volatile, and `/ping` says which one
-answered, because a memory service that forgets is worth noticing early:
+| the cassette | Cognee |
+| --- | --- |
+| a review state | a dataset (`memory_proposed` / `_accepted` / `_rejected`) |
+| an entry | a data item in that dataset |
+| the entry's contract fields | `external_metadata` on that item |
+| accepting | `cognify()` — the graph is built here, and only here |
+| recall | `recall()` over the accepted dataset alone |
+
+Two things follow that are worth knowing before reading `cognee_store.py`.
+
+**Identity is the cassette's, not Cognee's.** Cognee mints a fresh `data_id` per
+row and dedupes rows by content hash, so a revision or a review decision lands
+on a new row. The contract's `id` therefore lives inside `external_metadata` and
+outlives every row that carries it, which is what keeps a link to an entry valid
+while its text is revised and its review state moves.
+
+**A revision is forget-then-add, not Cognee's `update()`.** `update()`
+re-cognifies, and a proposed entry must not cost an LLM call before anyone has
+agreed to keep it.
+
+Postgres is still in the stack, but the cassette no longer writes rows into it:
+`provision.sql` creates a database Cognee owns (its relational tables, and its
+embeddings via pgvector), and the graph itself lives on Kuzu under
+`COGNEE_STORAGE_DIR`. `cassette.toml` now declares `tables = []`, because this
+cassette takes no grant on the tapes database at all.
+
+Without `COGNEE_ENABLED` it falls back to an in-process store, so you can try it
+with no engine and no credential. That store is volatile, and `/ping` says which
+one answered, because a memory service that forgets is worth noticing early:
 
 ```json
-{"status":"ok","cassette":"memory","store":"postgres","durable":true}
+{"status":"ok","cassette":"memory","store":"cognee","durable":true,"indexing":false}
 ```
 
 Treat `"durable": false` as fine for a look around and wrong for anything
-hosted.
+hosted. `"indexing": true` means an accepted entry's graph is still building:
+accepting returns before cognify finishes, so there is a window where an entry
+is accepted but not yet recallable. Reported, that window is a state; unsaid, it
+reads as recall having lost something.
 
 ## Running it on AWS
 
-The container is stateless, since all state lives in Postgres. That makes it
-ordinary to host: any container platform plus a managed database works, and a
-redeploy loses nothing.
+**The container is no longer stateless**, and that is the biggest deployment
+consequence of moving to Cognee. The knowledge graph lives on Kuzu on disk, so
+the `cognee-data` volume *is* the memory: a host with ephemeral storage loses
+every accepted entry's graph on redeploy, while the entries themselves survive
+in Postgres. Persistent storage is now a requirement rather than a convenience.
 
 Two region facts for **us-west-1**, where `deploy/aws.sh` lands:
 
 - **App Runner is not available there.** Nearest is us-west-2.
 - **Lightsail Containers and ECS Fargate are.** Lightsail nodes have only
-  ephemeral storage, which no longer disqualifies them now that nothing is kept
-  on disk.
+  ephemeral storage, which disqualifies them again now that the graph is kept on
+  disk — this had stopped mattering when the container was stateless.
 
 What it needs, wherever it runs:
 
 | | |
 | --- | --- |
-| `TAPES_DATABASE_URL` | Postgres DSN. RDS, Lightsail managed database, or a container |
-| `CASSETTE_NAME` | defaults to `memory`; drives route, schema, and role names |
+| `LLM_API_KEY` | the provider Cognee builds the graph with. No default, and nothing works without it |
+| `COGNEE_ENABLED` | `true` for the real store; unset runs the volatile fallback |
+| `COGNEE_STORAGE_DIR` | a **persistent volume**. The graph lives here |
+| `DB_*`, `VECTOR_DB_PROVIDER` | Postgres for Cognee's own tables and embeddings (`provision.sql`) |
+| `CASSETTE_NAME` | defaults to `memory`; drives route, database, and role names |
 | port | 9998 |
-| reachability | the tapes core that registers it must be able to fetch `/openapi` |
+| reachability | the tapes core that registers it must be able to fetch `/openapi`, and outbound HTTPS to the LLM provider |
 
 Core fetches that document with **no redirects followed**, and the API and the
 document must share an origin. So nothing that bounces through a login can sit
@@ -128,8 +194,9 @@ in front of it: no auth-redirecting ALB, and no serving the document from a CDN
 while the API lives elsewhere.
 
 **On locking it down.** The cassette has no authentication of its own. Anything
-that can reach it can read and write your memory, so the access boundary has to
-come from the network. A single EC2 instance running this compose file, with a
+that can reach it can read and write your memory — and, now that accepting an
+entry calls an LLM, spend your credential — so the access boundary has to come
+from the network. A single EC2 instance running this compose file, with a
 security group restricted to your own address, is the shortest path to that: one
 box, real disk, and an allowlist. Lightsail is less work to host but publishes a
 public HTTPS endpoint with no IP allowlist, which is the opposite of what a
@@ -154,11 +221,21 @@ once the box is up and never touches the image — but only after converging the
 security group, which revokes every allowlisted address that is not your
 current one. A redeploy has no business changing who can reach the box.
 
-`push.sh` recreates only the `memory` service; Postgres holds the entries and
-tapes fronts the cassette, so neither restarts. It also refreshes the box's ECR
-login before pulling: those tokens last 12 hours, and once one goes stale the
-pull fails with "repository does not exist or may require 'docker login'",
-which reads like a missing image rather than an expired credential.
+`push.sh` recreates only the `memory` service; Postgres holds Cognee's tables
+and tapes fronts the cassette, so neither restarts. The graph rides through on
+the `cognee-data` volume, which is why recreating that one container is safe.
+It also refreshes the box's ECR login before pulling: those tokens last 12
+hours, and once one goes stale the pull fails with "repository does not exist or
+may require 'docker login'", which reads like a missing image rather than an
+expired credential.
+
+**On the box you already have.** `aws.sh` bakes compose and `.env` in through
+cloud-init, which does not re-run, so an existing instance needs the new
+`compose.yaml`, the `LLM_API_KEY` line in `.env`, and the new `provision.sql`
+applied by hand over SSM before `push.sh` will do anything useful. The instance
+type also wants to go from `t4g.small` to `t4g.medium`: 2 GB is where an
+embedded graph database and a local embedding model start getting killed by the
+OOM reaper mid-cognify.
 
 **On transport encryption.** The allowlist controls who can connect, not who
 can observe in transit: the deployed box serves plain HTTP, so request and
@@ -208,6 +285,10 @@ curl -s -X POST $B/ingest/dream -H 'content-type: application/json' -d '{
 # Recall is empty until a human accepts.
 curl -s -X POST $B/recall -H 'content-type: application/json' -d '{"query":"opus"}'
 curl -s -X POST $B/entries/<id>/review -H 'content-type: application/json' -d '{"review":"accepted"}'
+
+# Accepting is what builds the graph, and it returns before that finishes.
+# Wait for indexing to clear, then recall.
+curl -s localhost:9998/ping        # {"indexing":true} while cognify runs
 curl -s -X POST $B/recall -H 'content-type: application/json' -d '{"query":"opus"}'
 ```
 
@@ -235,9 +316,16 @@ or core refuses the document whole.
 
 ## Not done yet
 
-- **Cognee.** `[[config]] cognee_base_url` is declared and unused. The routes
-  were written against the client contract so the backend can be swapped
-  without touching them.
+- **Recall is the least-proven path.** The store contract is verified end to end
+  against a real engine (`make test-cognee`), but that run deliberately makes no
+  LLM calls, so cognify and graph-backed recall are the two things it cannot
+  exercise. `recall()` asks Cognee first and falls back to ranking accepted
+  entries deterministically, which means a broken graph degrades quietly instead
+  of erroring — convenient, and worth knowing when judging result quality.
+- **Every write reads the whole dataset.** `find`, `get`, and `save` each list
+  every row to match on `external_metadata`, because that is where the contract's
+  identity lives. Fine at a review queue's scale, and the first thing to fix if
+  this ever holds more than a few thousand entries.
 - **`depends.views` is empty**, so this reads none of tapes' own data. Adding
   `["sessions", "spans"]` takes SELECT grants on `tapes_v1.<view>`, which means
   extending `provision.sql`. `raw_turns` may never be listed: core refuses the

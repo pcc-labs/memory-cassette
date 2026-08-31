@@ -21,7 +21,11 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-west-1}"
 NAME="memory-cassette"
-INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.small}"   # arm64; both images are multi-arch
+# arm64; both images are multi-arch. t4g.medium rather than .small because the
+# cassette now runs Cognee in-process: an embedded graph database and a local
+# embedding model share this box with Postgres, and 2 GB is where that starts
+# getting killed by the OOM reaper mid-cognify.
+INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.medium}"
 PORT=8082
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 IMAGE="${MEMORY_IMAGE:-$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$NAME:latest}"
@@ -56,6 +60,31 @@ if [[ "${1:-}" == "destroy" ]]; then
   aws iam delete-role --role-name "$NAME" 2>/dev/null || true
   say "Done. The ECR repository and its images are left alone."
   exit 0
+fi
+
+# --- the one secret AWS cannot generate ---------------------------------------
+# Cognee builds the knowledge graph with an LLM, so the box needs a provider
+# credential. Checked here, before anything is created: discovering it is
+# missing after an instance is running means a box that ingests and then fails
+# on the first accept.
+
+if [[ -z "${LLM_API_KEY:-}" ]]; then
+  cat >&2 <<'MISSING'
+LLM_API_KEY is not set.
+
+The memory cassette runs Cognee, which calls an LLM to build the knowledge
+graph when an entry is accepted. Export a key for the provider you want and
+re-run:
+
+    export LLM_API_KEY=sk-...
+    ./deploy/aws.sh                       # OpenAI (the default)
+
+    LLM_PROVIDER=anthropic LLM_MODEL=claude-sonnet-4-5 \
+    LLM_API_KEY=sk-ant-... ./deploy/aws.sh
+
+Embeddings run locally (fastembed), so this is the only vendor credential.
+MISSING
+  exit 1
 fi
 
 # --- who is allowed in --------------------------------------------------------
@@ -162,6 +191,9 @@ cat > .env <<ENV
 POSTGRES_PASSWORD=$PGPW
 CASSETTE_PASSWORD=$CASSPW
 MEMORY_IMAGE=$IMAGE
+LLM_API_KEY=$LLM_API_KEY
+LLM_PROVIDER=${LLM_PROVIDER:-openai}
+LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
 ENV
 chmod 600 .env
 
@@ -224,10 +256,15 @@ cat <<DONE
   reachable  from $MY_IP/32 only
   shell      aws ssm start-session --target $INSTANCE --region $REGION
 
-  Docker images still have to pull on first boot, so give it a couple of
-  minutes, then:
+  Docker images still have to pull on first boot, and Cognee downloads its
+  local embedding model on first use, so give it a few minutes, then:
 
     curl http://$IP:$PORT/v1/cassettes
+
+  The cassette reports its own store, which is worth checking once. Over the
+  SSM shell: docker compose exec memory curl -s localhost:9998/ping
+  "store":"cognee" is the live engine; "memory" means it fell back and is
+  forgetting everything on restart.
 
   Point your client's memory base at http://$IP:$PORT
 

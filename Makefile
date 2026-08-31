@@ -1,27 +1,29 @@
 # Dependencies live in pyproject.toml and are pinned by uv.lock; uv run syncs
 # the environment (including the dev group) before every invocation.
 UV := uv run --quiet
-TEST_DB := memory-cassette-test-db
-TEST_DSN := postgres://postgres:test@127.0.0.1:55432/postgres
+COGNEE_TEST_DIR := $(CURDIR)/.cognee-test
 
-.PHONY: help test test-pg lint fmt hooks run up down logs
+.PHONY: help test test-cognee lint fmt hooks run up down logs
 .DEFAULT_GOAL := help
 
 help: ## Show this help
-	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-8s %s\n", $$1, $$2}'
+	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-12s %s\n", $$1, $$2}'
 
-test: ## Run the suite (Postgres-backed cases skip)
+test: ## Run the suite (Cognee-backed cases skip)
 	$(UV) pytest -q
 
-test-pg: ## Run the suite against a throwaway Postgres, including the durability cases
-	@docker rm -f $(TEST_DB) >/dev/null 2>&1 || true
-	@docker run -d --rm --name $(TEST_DB) -e POSTGRES_PASSWORD=test \
-		-p 55432:5432 postgres:17-alpine >/dev/null
-	@printf 'waiting for postgres'
-	@until docker exec $(TEST_DB) pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; \
-		do printf '.'; sleep 0.5; done; echo
-	-@TAPES_DATABASE_URL=$(TEST_DSN) $(UV) pytest -q
-	@docker rm -f $(TEST_DB) >/dev/null
+# The whole contract, run against a real Cognee engine on its file-based
+# defaults (SQLite, LanceDB, Kuzu) in a throwaway directory — no Postgres and
+# no compose. COGNEE_SKIP_CONNECTION_TEST is what keeps this free: ingesting
+# and reviewing need no LLM, only accepting does, so the store contract can be
+# verified end to end without a credential or a bill.
+test-cognee: ## Run the suite against a real Cognee engine, including the durability cases
+	@rm -rf $(COGNEE_TEST_DIR)
+	-@COGNEE_ENABLED=true \
+		COGNEE_STORAGE_DIR=$(COGNEE_TEST_DIR) \
+		COGNEE_SKIP_CONNECTION_TEST=true \
+		uv run --quiet --extra cognee pytest -q --no-cov -p no:warnings
+	@rm -rf $(COGNEE_TEST_DIR)
 
 lint: ## Ruff lint + format check
 	$(UV) ruff check .
@@ -38,7 +40,7 @@ hooks: ## Install the pre-commit hook (ruff + tests with coverage)
 run: ## Serve the cassette alone on :9998 (no tapes; nothing will fetch /openapi)
 	$(UV) uvicorn main:app --host 127.0.0.1 --port 9998 --reload
 
-up: ## Bring up postgres + tapes + this cassette
+up: ## Bring up postgres + tapes + this cassette (needs LLM_API_KEY)
 	docker compose up --build -d
 	@echo "tapes:    http://localhost:8082/v1/cassettes"
 	@echo "cassette: http://localhost:9998/ping"

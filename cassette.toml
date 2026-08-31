@@ -11,8 +11,19 @@
 
 kind = "cassette/v1alpha1"
 
+# No tables. The store is Cognee, which keeps its own relational tables in its
+# own database, so this cassette owns nothing in the tapes database and takes no
+# grant on it. See provision.sql for the database and role a deployment creates
+# instead, and cognee_store.py for what the cassette does with them.
+#
+# Declared by its absence: empty rather than omitted, so "this cassette stores
+# nothing in tapes" is a stated fact rather than a gap. It sits up here with the
+# other top-level keys because a bare key after a [section] header would belong
+# to that section instead.
+tables = []
+
 # `name` is the identity everything derives from: the route
-# (/v1/cassettes/memory), the Postgres schema ("memory"), and the role
+# (/v1/cassettes/memory), the Cognee database ("memory"), and the role
 # ("cassette_memory").
 [cassette]
 name = "memory"
@@ -42,21 +53,20 @@ health = "/ping"
 openapi = "/openapi"
 prefix_path = "api"
 
-# The table this cassette owns in its own schema. The declaration is for
-# whoever provisions the database: core neither creates the schema nor grants
-# access to it. See provision.sql for the role and grant, and store.py for the
-# migration the cassette runs against them at startup.
-[[tables]]
-name = "entries"
+[[config]]
+key = "cognee_storage_dir"
+type = "string"
+default = "/var/lib/cognee"
+description = "Where the embedded Cognee engine keeps its graph and ingested files. Must be a volume: on the container filesystem every memory is lost on redeploy."
 
 [[config]]
-key = "cognee_base_url"
+key = "llm_provider"
 type = "string"
-default = "http://cognee:8000"
-description = "Base URL of the self-hosted Cognee instance. Must never point at Cognee Cloud."
+default = "openai"
+description = "LLM provider Cognee builds the knowledge graph with, called when an entry is accepted. Embeddings run locally and need no second credential."
 
 [[config]]
 key = "review_required"
 type = "bool"
 default = true
-description = "Withhold entries from recall until a human accepts them."
+description = "Withhold entries from recall until a human accepts them. Enforced structurally: only accepted entries are ever cognified, so unreviewed prose is not in the graph."

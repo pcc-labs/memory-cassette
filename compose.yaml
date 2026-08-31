@@ -1,13 +1,18 @@
 # A tapes deployment with the memory cassette in it: Postgres, the tapes API,
-# and the Python cassette beside it.
+# and the Python cassette beside it, running a live Cognee engine in-process.
 #
 # A cassette is only observable through core. Started alone this is an HTTP
 # server with an OpenAPI document and nothing to fetch it; started here, tapes
 # admits it, republishes its paths under /v1/cassettes/memory, and answers for
 # it in discovery.
 #
-#   docker compose up --build -d
+#   LLM_API_KEY=sk-... docker compose up --build -d
 #   curl localhost:8082/v1/cassettes
+#
+# Cognee is embedded in the cassette rather than run as a fourth service. A
+# cassette is an independently deployed HTTP service precisely so it can call
+# an SDK directly instead of proxying to one, and there is no second network
+# hop, no second image, and no second thing to secure.
 #
 # Only the tapes API is run, not `tapes serve`: the proxy needs an LLM upstream
 # and no cassette surface goes through it.
@@ -39,14 +44,46 @@ services:
     build: .
     ports:
       - "127.0.0.1:9998:9998"
+    volumes:
+      # Cognee's databases and ingested files. Without this the memory lives in
+      # the container's writable layer, and `docker compose up --build` is
+      # indistinguishable from amnesia.
+      - cognee-data:/var/lib/cognee
     environment:
       CASSETTE_NAME: memory
-      # The credential the deployment provisioned in provision.sql, under the
-      # role name the manifest derives. Tapes neither creates this role nor
-      # injects this value: the cassette declares what it needs and the thing
-      # that starts it supplies it. Set it empty to watch the same cassette
-      # fall back to its volatile store and say so at /ping.
-      TAPES_DATABASE_URL: ${MEMORY_DATABASE_URL:-postgres://cassette_memory:cassette@postgres:5432/tapes?sslmode=disable}
+
+      # Turns on the Cognee backend. Unset, the same image runs its volatile
+      # store and says so at /ping — which is the fastest way to see what the
+      # engine is actually buying you.
+      COGNEE_ENABLED: ${COGNEE_ENABLED:-true}
+
+      # The one credential this deployment cannot invent. Cognee builds the
+      # knowledge graph with an LLM, so accepting an entry calls out to this
+      # provider. Without it the cassette starts and ingests, and the first
+      # accept fails.
+      LLM_API_KEY: ${LLM_API_KEY:?set LLM_API_KEY (see README: Run it)}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+
+      # Embeddings are configured separately from the LLM, and Cognee defaults
+      # them to OpenAI whatever the LLM provider is. fastembed runs locally
+      # instead, so a deployment on a non-OpenAI provider needs no second
+      # credential and no second vendor.
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fastembed}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-384}
+
+      # Cognee's relational store and vector index, in the database
+      # provision.sql created. The graph stays on Kuzu, embedded, under
+      # COGNEE_STORAGE_DIR.
+      DB_PROVIDER: postgres
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: memory
+      DB_USERNAME: cassette_memory
+      DB_PASSWORD: cassette
+      VECTOR_DB_PROVIDER: pgvector
+      COGNEE_STORAGE_DIR: /var/lib/cognee
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,3 +110,4 @@ services:
 
 volumes:
   postgres-data:
+  cognee-data:

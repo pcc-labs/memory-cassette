@@ -14,10 +14,10 @@ ENTRIES = f"{main.PREFIX}/entries"
 
 
 @pytest.fixture(autouse=True)
-def clean_store():
-    main.store.clear()
+async def clean_store():
+    await main.store.clear()
     yield
-    main.store.clear()
+    await main.store.clear()
 
 
 def dream(session_id, reflection, tip_title, tip_body, tip_id="r"):
