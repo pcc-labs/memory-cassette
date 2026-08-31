@@ -264,3 +264,36 @@ def test_a_reflection_with_no_tip_does_not_strand_the_previous_one():
     )
 
     assert not any(e["kind"] == "tip" for e in entries())
+
+
+# --- the health check ---------------------------------------------------------
+
+
+def test_ping_reports_the_backend_that_answered():
+    body = client.get("/ping").json()
+    assert body["status"] == "ok"
+    assert body["cassette"] == "memory"
+    assert body["store"] == main.store.backend
+
+
+def test_ping_calls_the_store_rather_than_trusting_its_flag():
+    """A backend can construct fine and still be unusable — a Cognee store with
+    a driver missing did exactly that, and reported `durable: true` while every
+    read and write failed. The health check has to ask."""
+
+    class Broken:
+        backend, durable, indexing = "cognee", True, False
+
+        async def counts(self):
+            raise RuntimeError("PostgreSQL dependencies are not installed")
+
+    original = main.store
+    main.store = Broken()
+    try:
+        body = client.get("/ping").json()
+    finally:
+        main.store = original
+
+    assert body["status"] == "degraded"
+    assert body["durable"] is False
+    assert "PostgreSQL" in body["error"]

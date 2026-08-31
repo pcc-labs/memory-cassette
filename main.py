@@ -149,22 +149,37 @@ app = FastAPI(
 
 
 @app.get("/ping", include_in_schema=False)
-def ping() -> Response:
+async def ping() -> Response:
     # `store` is the load-bearing field: on the volatile backend every memory
     # dies with the process, and that should be visible from the health check
     # rather than discovered after a restart.
+    #
+    # It is answered by asking the store rather than by reading a flag off it,
+    # because a flag lies. A Cognee backend constructs fine with a missing
+    # driver and only fails when something first reads or writes, so this
+    # reported `durable: true` on a store that could not answer at all — which
+    # is precisely the quiet failure `durable` exists to prevent. `counts()` is
+    # the cheapest call that touches the real engine.
     #
     # `indexing` is the second thing worth saying out loud. Accepting an entry
     # returns before its graph is built, so there is a window where an entry is
     # accepted but not yet recallable. Reported, that window is a state; unsaid,
     # it reads as recall having lost something.
+    healthy, detail = True, {}
+    try:
+        await store.counts()
+    except Exception as exc:
+        healthy = False
+        detail["error"] = f"{type(exc).__name__}: {exc}"[:300]
+
     return JSONResponse(
         {
-            "status": "ok",
+            "status": "ok" if healthy else "degraded",
             "cassette": NAME,
             "store": store.backend,
-            "durable": store.durable,
+            "durable": store.durable and healthy,
             "indexing": store.indexing,
+            **detail,
         }
     )
 

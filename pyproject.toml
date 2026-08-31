@@ -16,11 +16,16 @@ dependencies = [
 # volatile fallback needs none of, so `make test` and a local look around stay
 # fast while the image (Dockerfile) installs `.[cognee]` and gets the engine.
 [project.optional-dependencies]
-# The fastembed extra is not optional in practice: EMBEDDING_PROVIDER defaults
-# to fastembed (compose.yaml) so that a deployment needs one vendor credential
-# rather than two, and without this the engine fails on the first write with an
-# ImportError buried inside a migration failure.
-cognee = ["cognee[fastembed]>=1.5.3"]
+# Neither of Cognee's extras is optional here, because compose.yaml configures
+# both: fastembed because EMBEDDING_PROVIDER defaults to it (one vendor
+# credential rather than two), and postgres because DB_PROVIDER points Cognee's
+# relational store and pgvector index at the database provision.sql creates.
+# Miss either and the engine imports fine and then fails on first use, which is
+# the worst place to find out.
+# `postgres-binary` rather than `postgres`: the former brings psycopg2-binary,
+# the latter builds psycopg2 from source and so wants libpq headers and a
+# compiler in the image for no benefit.
+cognee = ["cognee[fastembed,postgres-binary]>=1.5.3"]
 
 [dependency-groups]
 dev = [
