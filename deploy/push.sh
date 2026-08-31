@@ -18,9 +18,12 @@
 #      instance role carries AmazonEC2ContainerRegistryReadOnly, so the box can
 #      always mint a fresh one; this refreshes it before every pull.
 #
-#   2. Only the `memory` service is recreated. Postgres holds the entries and
-#      tapes fronts the cassette, so rolling all three would take the store
-#      down to ship a service that carries no state.
+#   2. Only the `memory` service is recreated. Postgres holds Cognee's tables
+#      and tapes fronts the cassette, so rolling all three would take the store
+#      down to ship one container. That container is no longer stateless — the
+#      knowledge graph lives on the cognee-data volume — but the volume is what
+#      it is mounted on, so recreating it keeps the memory and replaces only
+#      the code.
 #
 # Never runs aws.sh. That script converges the security group first, revoking
 # every allowlisted CIDR that is not the caller's current public IP — a

@@ -7,3 +7,9 @@ htmlcov/
 coverage.xml
 .venv/
 .env
+# Cognee's engine directories: `make test-cognee`'s throwaway, and whatever a
+# local `make run` leaves behind.
+.cognee-test/
+.cognee/
+.cognee_system/
+.data_storage/

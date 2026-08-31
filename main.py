@@ -14,9 +14,10 @@ Three admission rules shape this file:
   3. Every operation needs at least one response, and operation IDs must be
      unique within the cassette.
 
-Persistence lives in store.py. Without TAPES_DATABASE_URL this runs on a
-volatile in-process store and says so at /ping, which is fine for a look
-around and wrong for anything hosted.
+Persistence lives in store.py, and the real backend is a live Cognee instance
+(cognee_store.py). Without COGNEE_ENABLED this runs on a volatile in-process
+store and says so at /ping, which is fine for a look around and wrong for
+anything hosted.
 """
 
 from __future__ import annotations
@@ -38,7 +39,12 @@ from store import MemoryKind, MemoryReview, MemoryStatus, open_store
 NAME = os.environ.get("CASSETTE_NAME", "memory")
 PREFIX = f"/api/{NAME}"
 
-store = open_store(os.environ.get("TAPES_DATABASE_URL", ""))
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+store = open_store(_flag("COGNEE_ENABLED"))
 
 
 def now_iso() -> str:
@@ -143,16 +149,37 @@ app = FastAPI(
 
 
 @app.get("/ping", include_in_schema=False)
-def ping() -> Response:
+async def ping() -> Response:
     # `store` is the load-bearing field: on the volatile backend every memory
     # dies with the process, and that should be visible from the health check
     # rather than discovered after a restart.
+    #
+    # It is answered by asking the store rather than by reading a flag off it,
+    # because a flag lies. A Cognee backend constructs fine with a missing
+    # driver and only fails when something first reads or writes, so this
+    # reported `durable: true` on a store that could not answer at all — which
+    # is precisely the quiet failure `durable` exists to prevent. `counts()` is
+    # the cheapest call that touches the real engine.
+    #
+    # `indexing` is the second thing worth saying out loud. Accepting an entry
+    # returns before its graph is built, so there is a window where an entry is
+    # accepted but not yet recallable. Reported, that window is a state; unsaid,
+    # it reads as recall having lost something.
+    healthy, detail = True, {}
+    try:
+        await store.counts()
+    except Exception as exc:
+        healthy = False
+        detail["error"] = f"{type(exc).__name__}: {exc}"[:300]
+
     return JSONResponse(
         {
-            "status": "ok",
+            "status": "ok" if healthy else "degraded",
             "cassette": NAME,
-            "store": "postgres" if store.durable else "memory",
-            "durable": store.durable,
+            "store": store.backend,
+            "durable": store.durable and healthy,
+            "indexing": store.indexing,
+            **detail,
         }
     )
 
@@ -177,13 +204,13 @@ def openapi_document() -> Response:
     response_model=MemoryPage,
     tags=[NAME],
 )
-def list_entries(
+async def list_entries(
     review: MemoryReview = "accepted",
     kind: MemoryKind | None = None,
     status: MemoryStatus | None = None,
     q: str | None = None,
 ) -> MemoryPage:
-    items = [e for e in store.all() if e.review == review]
+    items = [e for e in await store.all() if e.review == review]
     if kind:
         items = [e for e in items if e.kind == kind]
     if status:
@@ -194,7 +221,7 @@ def list_entries(
             e for e in items if needle in e.title.lower() or needle in e.body.lower()
         ]
     items.sort(key=lambda e: e.lastSeenAt, reverse=True)
-    return MemoryPage(items=items, counts=MemoryCounts(**store.counts()))
+    return MemoryPage(items=items, counts=MemoryCounts(**await store.counts()))
 
 
 @app.get(
@@ -204,8 +231,8 @@ def list_entries(
     response_model=MemoryEntry,
     tags=[NAME],
 )
-def get_entry(entry_id: str) -> MemoryEntry:
-    found = store.get(entry_id)
+async def get_entry(entry_id: str) -> MemoryEntry:
+    found = await store.get(entry_id)
     if not found:
         raise HTTPException(status_code=404, detail="not found")
     return found
@@ -218,19 +245,25 @@ def get_entry(entry_id: str) -> MemoryEntry:
     response_model=MemoryEntry,
     tags=[NAME],
 )
-def review_entry(entry_id: str, body: ReviewRequest) -> MemoryEntry:
+async def review_entry(entry_id: str, body: ReviewRequest) -> MemoryEntry:
     """The review gate is the safety property: only accepted entries leave the
     review queue, and only accepted entries are ever injected into agent
-    sessions."""
-    found = store.get(entry_id)
+    sessions.
+
+    On the Cognee backend this is the call that builds the graph: an accepted
+    entry moves into the one dataset that is ever cognified, so the gate is a
+    property of what exists rather than a filter applied at read time. The
+    response returns before indexing finishes (see /ping's `indexing`).
+    """
+    found = await store.get(entry_id)
     if not found:
         raise HTTPException(status_code=404, detail="not found")
-    return store.save(
+    return await store.save(
         found.model_copy(update={"review": body.review, "lastSeenAt": now_iso()})
     )
 
 
-def upsert(
+async def upsert(
     session_id: str,
     kind: MemoryKind,
     title: str,
@@ -249,13 +282,13 @@ def upsert(
     The store keeps identity stable across a revision, so `id` and `firstSeenAt`
     survive and a link to an entry stays valid while its text changes.
     """
-    existing = store.find(session_id, kind)
+    existing = await store.find(session_id, kind)
     if existing is not None and existing.title == title and existing.body == text:
         # Re-opening a session page re-fires the reflection. Identical content
         # is not new information, so an acceptance already granted still stands.
-        return store.save(existing.model_copy(update={"lastSeenAt": stamp}))
+        return await store.save(existing.model_copy(update={"lastSeenAt": stamp}))
 
-    return store.save(
+    return await store.save(
         MemoryEntry(
             id=existing.id if existing else str(uuid.uuid4()),
             kind=kind,
@@ -284,7 +317,7 @@ def upsert(
     response_model=list[MemoryEntry],
     tags=[NAME],
 )
-def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
+async def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
     """A dream payload maps onto the kind enum with nothing left over: a
     reflection is an `observation`, a tip is a `tip`. Both land as `proposed`
     and wait for the review gate."""
@@ -327,11 +360,11 @@ def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
             )
         )
 
-    written = [upsert(body.sessionId, *fields, stamp) for fields in incoming]
+    written = [await upsert(body.sessionId, *fields, stamp) for fields in incoming]
 
     # A later pass can come back without a tip. The old tip was derived from a
     # reflection that no longer stands, so it does not outlive it.
-    store.delete_kinds_except(body.sessionId, {kind for kind, *_ in incoming})
+    await store.delete_kinds_except(body.sessionId, {kind for kind, *_ in incoming})
 
     return written
 
@@ -353,15 +386,14 @@ def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
         }
     },
 )
-def recall(body: RecallRequest) -> RecallResponse:
-    """Only accepted entries are recallable. Cognee's GRAPH_COMPLETION replaces
-    the substring match here without changing the signature."""
-    needle = body.query.lower()
-    items = [
-        e
-        for e in store.all()
-        if e.review == "accepted"
-        and (needle in e.title.lower() or needle in e.body.lower())
-    ]
-    items.sort(key=lambda e: e.confidence, reverse=True)
-    return RecallResponse(items=items[: body.limit], query=body.query)
+async def recall(body: RecallRequest) -> RecallResponse:
+    """Only accepted entries are recallable.
+
+    The ranking belongs to the store: on Cognee this is a query against the
+    knowledge graph built from accepted entries, and on the fallback it is a
+    substring match. Both answer in the same entries, so a client cannot tell
+    which one served it apart from what the results are worth.
+    """
+    return RecallResponse(
+        items=await store.recall(body.query, body.limit), query=body.query
+    )

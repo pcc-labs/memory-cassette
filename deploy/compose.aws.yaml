@@ -1,6 +1,7 @@
-# What runs on the box. Same three services as the local compose, with two
-# differences: nothing is built here (both images are pulled), and Postgres
-# holds a real password instead of the local throwaway.
+# What runs on the box. Same three services as the local compose, with three
+# differences: nothing is built here (both images are pulled), Postgres holds a
+# real password instead of the local throwaway, and the LLM credential comes
+# from the instance's .env rather than the operator's shell.
 #
 # Tapes runs here too, not just the cassette. A cassette is only reachable
 # through a core, so hosting the cassette alone would still require a tapes
@@ -31,15 +32,41 @@ services:
   memory:
     image: ${MEMORY_IMAGE}
     restart: unless-stopped
+    volumes:
+      # Cognee's databases and ingested files. This volume is the memory: the
+      # box can be rolled onto a new image (deploy/push.sh) without it moving.
+      - cognee-data:/var/lib/cognee
     environment:
       CASSETTE_NAME: memory
-      TAPES_DATABASE_URL: postgres://cassette_memory:${CASSETTE_PASSWORD}@postgres:5432/tapes?sslmode=disable
+      COGNEE_ENABLED: "true"
+
+      # Supplied by deploy/aws.sh from the operator's own environment and
+      # written to the instance's .env. The only secret here that AWS did not
+      # generate, and the only one worth rotating by hand.
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+
+      # Local embeddings, so the box needs one vendor rather than two.
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fastembed}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-384}
+
+      DB_PROVIDER: postgres
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: memory
+      DB_USERNAME: cassette_memory
+      DB_PASSWORD: ${CASSETTE_PASSWORD}
+      VECTOR_DB_PROVIDER: pgvector
+      COGNEE_STORAGE_DIR: /var/lib/cognee
     depends_on:
       postgres:
         condition: service_healthy
     # No ports. The cassette is reachable only from inside this compose
     # network; the security group protects tapes, and nothing should be able to
-    # reach the cassette around it.
+    # reach the cassette around it. That matters more now: this process holds
+    # an LLM credential and the whole knowledge graph.
 
   tapes:
     image: public.ecr.aws/g4e5l3z3/papercomputeco/tapes:v0.34.0
@@ -58,3 +85,4 @@ services:
 
 volumes:
   postgres-data:
+  cognee-data:

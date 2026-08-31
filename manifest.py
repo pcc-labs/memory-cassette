@@ -6,7 +6,7 @@ rides inside the served OpenAPI document as the `x-tapes-cassette` root
 extension, and it is the only one core reads. Keep them in sync.
 
 The name drives three namespaces: the public route (/v1/cassettes/memory), the
-Postgres schema ("memory"), and the role ("cassette_memory"). Building the
+Cognee database ("memory"), and the role ("cassette_memory"). Building the
 manifest from the runtime name rather than hardcoding it means the same image
 installed under a second name publishes a correct document for that name too.
 """
@@ -49,18 +49,31 @@ def manifest(name: str) -> dict:
             "openapi": "/openapi",
             "prefix_path": "api",
         },
-        # Declared, not created. Core publishes this and does nothing about it;
-        # the deployment provisions the schema and role (see provision.sql) and
-        # the cassette runs its own migration at startup (store.py: DDL).
-        "tables": [{"name": "entries"}],
+        # Empty, and that is the news. The store is Cognee, which keeps its own
+        # relational tables in its own database (see provision.sql), so this
+        # cassette owns no table in the tapes database and takes no grant on
+        # it. What it needs from the deployment is a database and an LLM
+        # credential, not a schema.
+        "tables": [],
         "config": [
             {
-                "key": "cognee_base_url",
+                "key": "cognee_storage_dir",
                 "type": "string",
-                "default": "http://cognee:8000",
+                "default": "/var/lib/cognee",
                 "description": (
-                    "Base URL of the self-hosted Cognee instance. Must never "
-                    "point at Cognee Cloud."
+                    "Where the embedded Cognee engine keeps its graph and "
+                    "ingested files. Must be a volume: on the container "
+                    "filesystem every memory is lost on redeploy."
+                ),
+            },
+            {
+                "key": "llm_provider",
+                "type": "string",
+                "default": "openai",
+                "description": (
+                    "LLM provider Cognee builds the knowledge graph with, "
+                    "called when an entry is accepted. Embeddings run locally "
+                    "and need no second credential."
                 ),
             },
             {
@@ -68,7 +81,9 @@ def manifest(name: str) -> dict:
                 "type": "bool",
                 "default": True,
                 "description": (
-                    "Withhold entries from recall until a human accepts them."
+                    "Withhold entries from recall until a human accepts them. "
+                    "Enforced structurally: only accepted entries are ever "
+                    "cognified, so unreviewed prose is not in the graph."
                 ),
             },
         ],
