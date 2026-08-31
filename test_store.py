@@ -212,3 +212,119 @@ def test_open_store_falls_back_to_memory_when_cognee_is_not_asked_for():
     assert isinstance(store, MemoryStore)
     assert store.durable is False
     assert store.backend == "memory"
+
+
+# --- the two failure modes the fixes exist for -------------------------------
+
+
+@pytest.mark.skipif(
+    not COGNEE_ENABLED, reason="COGNEE_ENABLED not set; run `make test-cognee`"
+)
+async def test_a_transient_write_failure_leaves_the_previous_version():
+    """save() forgets the old row before adding the new one, so an add that
+    raises used to destroy the entry outright — accepting a memory deleted it.
+    A stale entry beats a missing one.
+
+    Transient specifically: the write of the new text fails, the restore of the
+    old text succeeds. See the test below for what this does not cover.
+    """
+    from cognee_store import CogneeStore
+
+    store = CogneeStore()
+    await store.clear()
+    try:
+        written = await store.save(entry(title="Original prose"))
+
+        original_add = store._add
+
+        async def fail_only_the_new_version(e):
+            if e.title == "Revised":
+                raise RuntimeError("db blip")
+            await original_add(e)
+
+        store._add = fail_only_the_new_version
+        try:
+            with pytest.raises(RuntimeError):
+                await store.save(written.model_copy(update={"title": "Revised"}))
+        finally:
+            store._add = original_add
+
+        survived = await store.get(written.id)
+        assert survived is not None, "the entry was destroyed by a failed write"
+        assert survived.title == "Original prose"
+    finally:
+        await store.clear()
+        await store.close()
+
+
+@pytest.mark.skipif(
+    not COGNEE_ENABLED, reason="COGNEE_ENABLED not set; run `make test-cognee`"
+)
+async def test_a_sustained_outage_still_destroys_the_entry():
+    """The compensation is best effort, and this is the gap it does not close.
+
+    The restore is itself a write, so when the engine is down rather than
+    momentarily unhappy — the OOM the instance type was raised for, a database
+    that has gone away — it fails too and the entry is lost. Pinned rather than
+    fixed: closing it means writing the replacement before forgetting the old
+    row, which is a change to how save() orders its work, not another catch.
+    """
+    from cognee_store import CogneeStore
+
+    store = CogneeStore()
+    await store.clear()
+    try:
+        written = await store.save(entry(title="Original prose"))
+
+        async def always_fail(e):
+            raise RuntimeError("engine is down")
+
+        store._add = always_fail
+        with pytest.raises(RuntimeError):
+            await store.save(written.model_copy(update={"title": "Revised"}))
+
+        assert await store.get(written.id) is None, (
+            "if this now passes, save() was made durable and this test should "
+            "become the opposite assertion"
+        )
+    finally:
+        await store.clear()
+        await store.close()
+
+
+@pytest.mark.skipif(
+    not COGNEE_ENABLED, reason="COGNEE_ENABLED not set; run `make test-cognee`"
+)
+async def test_an_accept_during_an_in_flight_cognify_is_not_dropped():
+    """The second of two quick accepts used to land in the accepted dataset and
+    never be cognified, while /ping went back to indexing:false over it."""
+    import asyncio
+
+    from cognee_store import CogneeStore
+
+    store = CogneeStore()
+    await store.clear()
+    passes = 0
+
+    async def fake_cognify(datasets=None):
+        nonlocal passes
+        passes += 1
+        await asyncio.sleep(0.2)
+
+    store._cognee = type(
+        "Stub", (), {"cognify": staticmethod(fake_cognify), "__getattr__": None}
+    )()
+    try:
+        store._schedule_cognify()
+        await asyncio.sleep(0.05)  # first pass is running
+        store._schedule_cognify()  # arrives mid-flight
+        assert store.indexing is True
+
+        for _ in range(50):
+            if not store.indexing:
+                break
+            await asyncio.sleep(0.1)
+
+        assert passes == 2, f"the second accept was dropped (passes={passes})"
+    finally:
+        await store.close()

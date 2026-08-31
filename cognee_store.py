@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any
 
 from store import Entry
@@ -92,6 +93,24 @@ def document(entry: Entry) -> str:
     return f"{entry.title}\n\n{entry.body}\n\nA {entry.kind} derived from {origin}."
 
 
+def _mentions(blob: str, title: str) -> bool:
+    """Does retrieved text actually name this entry?
+
+    Whole-token, not raw substring, and never for a blank title. A plain `in`
+    test made two entries un-recallable-by-anything-else: one titled "" (a
+    whitespace-only tip title survives clean_title) is a substring of every
+    string including "", so it came back for every query ahead of real
+    matches; and a short one like "T" or "Bug" matches inside unrelated prose
+    ("t" is in "unrelated"), so the graph appeared to have retrieved an entry
+    it never saw. The lookarounds rather than \\b so a title that starts or
+    ends with punctuation still matches.
+    """
+    needle = title.strip().lower()
+    if not needle:
+        return False
+    return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", blob) is not None
+
+
 def node_set_for(entry: Entry) -> list[str]:
     """Graph tags, so recall can be narrowed without reading every entry."""
     tags = [f"kind:{entry.kind}"]
@@ -123,6 +142,7 @@ class CogneeStore:
         # LLM pipeline. Kept apart, and tracked so a caller can be told an
         # entry is still indexing rather than missing.
         self._cognify_task: asyncio.Task | None = None
+        self._cognify_pending = False
         self._setup_done = False
         self._setup_lock = asyncio.Lock()
 
@@ -220,12 +240,36 @@ class CogneeStore:
         path: a revision (same dataset, new prose), a review decision (a
         different dataset), and a first write (nothing to forget). The row
         moves; the entry's `id` does not, because it rides in the metadata.
+
+        The add is compensated rather than left to fail open. `forget` has
+        already removed the old row by the time `add` runs, so an add that
+        raises would destroy the entry outright — accepting a memory would
+        delete it. The previous version goes back in before the error is
+        surfaced: a stale entry beats a missing one.
         """
         located = await self._locate(entry.id)
+        previous: Entry | None = None
         if located is not None:
             dataset_id, row = located
+            previous = self._entry_of(row)
             await self._cognee.forget(data_id=row.id, dataset_id=dataset_id)
 
+        try:
+            await self._add(entry)
+        except Exception:
+            if previous is not None:
+                try:
+                    await self._add(previous)
+                except Exception:  # pragma: no cover - restore is best effort
+                    pass
+            raise
+
+        if entry.review == "accepted":
+            self._schedule_cognify()
+        return entry
+
+    async def _add(self, entry: Entry) -> None:
+        """One row, written into the dataset its review state names."""
         from cognee.tasks.ingestion.data_item import DataItem
 
         await self._cognee.add(
@@ -238,10 +282,6 @@ class CogneeStore:
             node_set=node_set_for(entry),
         )
 
-        if entry.review == "accepted":
-            self._schedule_cognify()
-        return entry
-
     def _schedule_cognify(self) -> None:
         """Build the graph over accepted entries, off the request path.
 
@@ -249,18 +289,35 @@ class CogneeStore:
         The entry is listed as accepted the moment it is written and becomes
         recallable when this finishes, which is why /ping reports indexing
         state rather than leaving the gap to be discovered.
+
+        An accept that arrives mid-run raises a flag the running task picks up
+        instead of being dropped. Returning early without one meant the second
+        of two quick accepts was written to the accepted dataset and never
+        cognified: /ping went back to `indexing: false` while that entry stayed
+        unrecallable until some later, unrelated accept happened to rebuild the
+        graph.
         """
         if self._cognify_task and not self._cognify_task.done():
+            self._cognify_pending = True
             return
 
         async def run() -> None:
-            try:
-                await self._cognee.cognify(datasets=[ACCEPTED])
-            except Exception:  # pragma: no cover - depends on a live LLM
-                # A failed cognify leaves the entry accepted and un-indexed,
-                # which the next accept retries. Losing the acceptance because
-                # the LLM was down would be the worse failure.
-                pass
+            # Clearing the flag before each pass is what makes it safe: a write
+            # that landed before the reset is already in the dataset this pass
+            # reads, and one that lands after sets the flag again. Nothing
+            # awaits between the final check and the return, so no accept can
+            # slip in after the task decides to stop but before it is done.
+            while True:
+                self._cognify_pending = False
+                try:
+                    await self._cognee.cognify(datasets=[ACCEPTED])
+                except Exception:  # pragma: no cover - depends on a live LLM
+                    # A failed cognify leaves the entry accepted and un-indexed,
+                    # which the next accept retries. Losing the acceptance because
+                    # the LLM was down would be the worse failure.
+                    pass
+                if not self._cognify_pending:
+                    return
 
         self._cognify_task = asyncio.create_task(run())
 
@@ -291,6 +348,23 @@ class CogneeStore:
 
     # --- recall -------------------------------------------------------------
 
+    @staticmethod
+    def _text_of(result: Any) -> str:
+        """The prose a recall result carries, and only that.
+
+        Cognee's result union is not uniform: a graph entry has `text`, while a
+        QA entry carries `answer` and `context` instead. The predecessor fell
+        back to `str(result)`, which stringifies the whole model — and a QA
+        entry's repr contains the caller's own question, so an entry whose
+        title appeared anywhere in the query matched as though the graph had
+        retrieved it.
+        """
+        for field in ("text", "answer", "context"):
+            value = getattr(result, field, None)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
     async def recall(self, query: str, limit: int) -> list[Entry]:
         """Ask the knowledge graph, and answer in the contract's own entries.
 
@@ -316,8 +390,8 @@ class CogneeStore:
                 top_k=limit,
                 only_context=True,
             )
-            blob = " ".join(str(getattr(r, "text", "") or r) for r in results).lower()
-            ranked = [e for e in accepted if e.title.lower() in blob]
+            blob = " ".join(self._text_of(r) for r in results).strip().lower()
+            ranked = [e for e in accepted if blob and _mentions(blob, e.title)]
         except Exception:  # pragma: no cover - depends on a live LLM
             ranked = []
 
