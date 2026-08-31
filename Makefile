@@ -41,6 +41,12 @@ run: ## Serve the cassette alone on :9998 (no tapes; nothing will fetch /openapi
 	$(UV) uvicorn main:app --host 127.0.0.1 --port 9998 --reload
 
 up: ## Bring up postgres + tapes + this cassette (needs LLM_API_KEY)
+	@if [ -z "$$LLM_API_KEY" ] && [ "$${COGNEE_ENABLED:-true}" != "false" ]; then \
+		echo "LLM_API_KEY is not set. Cognee calls an LLM when an entry is accepted."; \
+		echo "  export LLM_API_KEY=sk-...            # then: make up"; \
+		echo "  COGNEE_ENABLED=false make up         # volatile store, no credential"; \
+		exit 1; \
+	fi
 	docker compose up --build -d
 	@echo "tapes:    http://localhost:8082/v1/cassettes"
 	@echo "cassette: http://localhost:9998/ping"

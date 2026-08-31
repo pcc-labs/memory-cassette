@@ -116,13 +116,18 @@ class MemoryStore:
 def open_store(enabled: bool):
     """Cognee when the deployment asked for it, otherwise the volatile fallback.
 
-    Deliberately not an error, and deliberately not automatic. Cognee is a
-    heavy engine with an LLM credential behind it, so a deployment says
-    outright that it wants one (COGNEE_ENABLED) rather than having a memory
-    service quietly start ingesting against whatever happens to be configured.
-    An import or connection failure falls back rather than refusing to boot,
-    and the API reports which backend answered so "it forgot everything" is
-    never a mystery.
+    Deliberately not automatic. Cognee is a heavy engine with an LLM credential
+    behind it, so a deployment says outright that it wants one
+    (COGNEE_ENABLED) rather than having a memory service quietly start
+    ingesting against whatever happens to be configured.
+
+    Asking for Cognee and not getting it is a startup failure, not a fallback.
+    A deployment that said COGNEE_ENABLED=true wants durable memory, and
+    quietly answering with the volatile store instead would lose every entry
+    on the next restart while /ping cheerfully reported a healthy service —
+    the failure this whole module is arranged to make impossible. The fallback
+    is for deployments that did not ask, and the API reports which backend
+    answered so "it forgot everything" is never a mystery.
     """
     if not enabled:
         return MemoryStore()

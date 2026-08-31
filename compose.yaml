@@ -61,7 +61,14 @@ services:
       # knowledge graph with an LLM, so accepting an entry calls out to this
       # provider. Without it the cassette starts and ingests, and the first
       # accept fails.
-      LLM_API_KEY: ${LLM_API_KEY:?set LLM_API_KEY (see README: Run it)}
+      #
+      # Quoted, and deliberately not `${LLM_API_KEY:?...}`. An unquoted default
+      # containing ": " is parsed as a nested mapping and breaks the file for
+      # every compose command, and `:?` would abort `down` and `logs` too —
+      # needing a credential to stop a stack is absurd, and it contradicts
+      # running with COGNEE_ENABLED=false and no key at all. `make up` checks
+      # for the key instead, where the check costs nothing else.
+      LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
 
