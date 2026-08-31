@@ -16,7 +16,11 @@ dependencies = [
 # volatile fallback needs none of, so `make test` and a local look around stay
 # fast while the image (Dockerfile) installs `.[cognee]` and gets the engine.
 [project.optional-dependencies]
-cognee = ["cognee>=1.5.3"]
+# The fastembed extra is not optional in practice: EMBEDDING_PROVIDER defaults
+# to fastembed (compose.yaml) so that a deployment needs one vendor credential
+# rather than two, and without this the engine fails on the first write with an
+# ImportError buried inside a migration failure.
+cognee = ["cognee[fastembed]>=1.5.3"]
 
 [dependency-groups]
 dev = [

@@ -316,12 +316,13 @@ or core refuses the document whole.
 
 ## Not done yet
 
-- **Recall is the least-proven path.** The store contract is verified end to end
-  against a real engine (`make test-cognee`), but that run deliberately makes no
-  LLM calls, so cognify and graph-backed recall are the two things it cannot
-  exercise. `recall()` asks Cognee first and falls back to ranking accepted
-  entries deterministically, which means a broken graph degrades quietly instead
-  of erroring — convenient, and worth knowing when judging result quality.
+- **Nothing automated covers the LLM path.** `make test-cognee` verifies the
+  store contract against a real engine but deliberately makes no LLM calls, so
+  cognify and graph-backed recall are exercised only by hand. They do work: a
+  query sharing no words with an entry's title (`"what did the expensive model
+  do?"`) comes back from the graph. But `recall()` falls back to substring
+  matching when the graph answers nothing, so a broken graph degrades quietly
+  rather than erroring — worth knowing when judging result quality.
 - **Every write reads the whole dataset.** `find`, `get`, and `save` each list
   every row to match on `external_metadata`, because that is where the contract's
   identity lives. Fine at a review queue's scale, and the first thing to fix if
