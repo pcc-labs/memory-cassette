@@ -297,3 +297,35 @@ def test_ping_calls_the_store_rather_than_trusting_its_flag():
     assert body["status"] == "degraded"
     assert body["durable"] is False
     assert "PostgreSQL" in body["error"]
+
+
+# --- anomalies: the blameless why --------------------------------------------
+
+
+def test_an_anomaly_files_as_its_own_entry():
+    """The client's anomaly — the questioned decision plus the agent's stated
+    why — lands as an `anomaly` entry: the what is the reviewable title, the
+    why is the body a teammate recalls."""
+    payload = dream("sess_1", "Prose.", "T", "B")
+    payload["anomaly"] = {
+        "what": "Switched from qwen to fable mid-run",
+        "why": "The archetype instruction was lost in compaction.",
+    }
+    client.post(INGEST, json=payload)
+
+    items = entries()
+    assert sorted(e["kind"] for e in items) == ["anomaly", "observation", "tip"]
+    anomaly = next(e for e in items if e["kind"] == "anomaly")
+    assert anomaly["title"] == "Switched from qwen to fable mid-run"
+    assert anomaly["body"] == "The archetype instruction was lost in compaction."
+    assert anomaly["attrs"]["source"] == "client.anomaly"
+
+
+def test_a_later_pass_without_an_anomaly_retires_it():
+    """Same supersession contract as the tip: a re-reflection that found no
+    anomaly means the old one described a state that no longer stands."""
+    payload = dream("sess_1", "Prose.", "T", "B")
+    payload["anomaly"] = {"what": "W", "why": "Y"}
+    client.post(INGEST, json=payload)
+    client.post(INGEST, json=dream("sess_1", "Prose 2.", "T", "B"))
+    assert sorted(e["kind"] for e in entries()) == ["observation", "tip"]

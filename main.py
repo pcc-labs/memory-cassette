@@ -110,6 +110,15 @@ class DreamTip(BaseModel):
     body: str
 
 
+class DreamAnomaly(BaseModel):
+    """The blameless-why note: the decision the user questioned (or the
+    deviation they hit) and the agent's own stated rationale, grounded in the
+    session's turns."""
+
+    what: str
+    why: str
+
+
 class DreamIngest(BaseModel):
     """A client's dream output, posted verbatim."""
 
@@ -124,6 +133,9 @@ class DreamIngest(BaseModel):
     # ask for this in the same call.
     reflectionTitle: str | None = None
     tip: DreamTip | None = None
+    # The session's anomaly, when the client found one — most sessions have
+    # none. Optional so existing clients keep working.
+    anomaly: DreamAnomaly | None = None
 
 
 class RecallRequest(BaseModel):
@@ -319,8 +331,8 @@ async def upsert(
 )
 async def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
     """A dream payload maps onto the kind enum with nothing left over: a
-    reflection is an `observation`, a tip is a `tip`. Both land as `proposed`
-    and wait for the review gate."""
+    reflection is an `observation`, an anomaly is an `anomaly`, a tip is a
+    `tip`. All land as `proposed` and wait for the review gate."""
     stamp = now_iso()
 
     incoming: list[tuple[MemoryKind, str, str, float, dict[str, Any]]] = []
@@ -342,6 +354,19 @@ async def ingest_dream(body: DreamIngest) -> list[MemoryEntry]:
                     "source": "client.reflection",
                     "observations": body.observations,
                     "titleSource": title_source,
+                },
+            )
+        )
+    if body.anomaly:
+        incoming.append(
+            (
+                "anomaly",
+                clean_title(body.anomaly.what),
+                body.anomaly.why,
+                0.7,
+                {
+                    "source": "client.anomaly",
+                    "titleSource": "client",
                 },
             )
         )
