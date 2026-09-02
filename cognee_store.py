@@ -325,6 +325,18 @@ class CogneeStore:
     def indexing(self) -> bool:
         return bool(self._cognify_task and not self._cognify_task.done())
 
+    async def delete(self, entry_id: str) -> bool:
+        """Forget the row from whichever dataset holds it. An accepted entry
+        leaves the accepted dataset here, and recall only ever hands back
+        graph hits that still map onto an accepted row, so a node the last
+        cognify built for it cannot resurface it."""
+        located = await self._locate(entry_id)
+        if located is None:
+            return False
+        dataset_id, row = located
+        await self._cognee.forget(data_id=row.id, dataset_id=dataset_id)
+        return True
+
     async def delete_kinds_except(self, session_id: str, kinds: set[str]) -> None:
         for dataset_id, row in await self._rows():
             entry = self._entry_of(row)

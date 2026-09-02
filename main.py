@@ -266,6 +266,10 @@ async def review_entry(entry_id: str, body: ReviewRequest) -> MemoryEntry:
     entry moves into the one dataset that is ever cognified, so the gate is a
     property of what exists rather than a filter applied at read time. The
     response returns before indexing finishes (see /ping's `indexing`).
+
+    Any transition is allowed, including accepted back to rejected: an
+    acceptance is a decision, not a one-way door, and taking one back moves
+    the row out of the accepted dataset the same way accepting moved it in.
     """
     found = await store.get(entry_id)
     if not found:
@@ -273,6 +277,27 @@ async def review_entry(entry_id: str, body: ReviewRequest) -> MemoryEntry:
     return await store.save(
         found.model_copy(update={"review": body.review, "lastSeenAt": now_iso()})
     )
+
+
+@app.delete(
+    f"{PREFIX}/entries/{{entry_id}}",
+    operation_id="deleteMemoryEntry",
+    summary="Remove an entry outright, in any review state",
+    status_code=204,
+    tags=[NAME],
+)
+async def delete_entry(entry_id: str) -> Response:
+    """Rejecting hides an entry from recall and keeps it for the record.
+    Deleting is for the entry that should never have been filed: a template
+    tip that got accepted before the written reflection landed, a
+    reflection of the wrong session. Nothing supersedes it later, because
+    the next reflection of that session files a fresh entry.
+
+    Accepted entries are deletable on purpose. The review gate governs what
+    reaches recall, not what a human may take back."""
+    if not await store.delete(entry_id):
+        raise HTTPException(status_code=404, detail="not found")
+    return Response(status_code=204)
 
 
 async def upsert(

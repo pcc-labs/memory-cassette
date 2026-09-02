@@ -40,9 +40,13 @@ contract, and swapping the store did not change one of them.
 
      proposed --- Accept ---> accepted -----> GET  /entries?review=accepted
          |                    + cognify       POST /recall
-         |                                    MCP  memory.recall
+         |                       |            MCP  memory.recall
+         |                     Reject
+         |                       v
          +------- Reject ---> rejected
                               (hidden, never recalled)
+
+     any state --- DELETE /entries/{id} ---> gone
 
 
   Each review state is a Cognee dataset, and only the accepted one is ever
@@ -253,12 +257,19 @@ up in [issue #1](https://github.com/pcc-labs/memory-cassette/issues/1).
 | `POST /ingest/dream` | Take a client's dream output verbatim |
 | `GET /entries` | List by review state, kind, status, or substring |
 | `GET /entries/{id}` | Read one |
-| `POST /entries/{id}/review` | Accept or reject |
+| `POST /entries/{id}/review` | Accept or reject, in either direction |
+| `DELETE /entries/{id}` | Remove an entry outright, in any review state |
 | `POST /recall` | Search accepted memory. Published over MCP as `memory.recall` |
 
 A dream payload maps onto the kind enum with nothing left over: a reflection
 becomes an `observation`, a tip becomes a `tip`. Both land `proposed` and stay
 out of recall until a human accepts them.
+
+An acceptance is not final. Reviewing an accepted entry as `rejected` moves
+it out of recall and keeps it on the record; `DELETE` removes it entirely.
+Both matter because clients push a cheap template reflection first and an
+LLM-written one seconds later: if the second never lands, the template is
+what sits in the queue, and one of those accepted by mistake needs a way out.
 
 ## Wiring a client to it
 
