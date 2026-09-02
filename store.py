@@ -89,6 +89,15 @@ class MemoryStore:
         for key in [k for k in self._rows if k[0] == session_id and k[1] not in kinds]:
             del self._rows[key]
 
+    async def delete(self, entry_id: str) -> bool:
+        """Remove one entry outright, whatever its review state. False when
+        there was nothing to remove."""
+        key = next((k for k, e in self._rows.items() if e.id == entry_id), None)
+        if key is None:
+            return False
+        del self._rows[key]
+        return True
+
     async def counts(self) -> dict[str, int]:
         rows = self._rows.values()
         return {

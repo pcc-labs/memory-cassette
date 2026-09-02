@@ -131,6 +131,17 @@ async def test_delete_kinds_except_leaves_other_sessions_alone(store):
     assert await store.find("sess_2", "tip") is not None
 
 
+async def test_delete_removes_one_entry_whatever_its_state(store):
+    await store.save(entry(session_id="a", review="accepted"))
+    await store.save(entry(session_id="b", review="proposed"))
+    assert await store.delete("a:observation") is True
+    assert await store.get("a:observation") is None
+    assert await store.find("a", "observation") is None
+    assert await store.get("b:observation") is not None
+    assert await store.counts() == {"accepted": 0, "proposed": 1}
+    assert await store.delete("a:observation") is False
+
+
 async def test_recall_returns_only_accepted_entries(store):
     """The gate, at the level the store can enforce it. On Cognee this is
     structural (only the accepted dataset is ever cognified); here it is the

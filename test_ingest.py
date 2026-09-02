@@ -100,6 +100,52 @@ def test_superseding_an_accepted_entry_sends_it_back_for_review():
     assert reproposed["body"] == "Rewritten prose."
 
 
+def test_an_acceptance_can_be_taken_back():
+    """Accepting is a decision, not a one-way door. A template tip accepted
+    before the written reflection landed has to be removable from recall."""
+    client.post(INGEST, json=dream("sess_1", "Prose.", "Déjà vu, every turn", "Body"))
+    tip = next(e for e in entries("proposed") if e["kind"] == "tip")
+    client.post(f"{ENTRIES}/{tip['id']}/review", json={"review": "accepted"})
+    assert client.post(f"{main.PREFIX}/recall", json={"query": "vu"}).json()["items"]
+
+    r = client.post(f"{ENTRIES}/{tip['id']}/review", json={"review": "rejected"})
+    assert r.status_code == 200
+    assert r.json()["review"] == "rejected"
+    assert [e["id"] for e in entries("accepted")] == []
+    assert (
+        client.post(f"{main.PREFIX}/recall", json={"query": "vu"}).json()["items"] == []
+    )
+    # Still on the record, hidden.
+    assert client.get(f"{ENTRIES}/{tip['id']}").json()["review"] == "rejected"
+
+
+def test_an_entry_can_be_deleted_in_any_review_state():
+    client.post(INGEST, json=dream("sess_1", "Prose.", "T", "B"))
+    obs = next(e for e in entries("proposed") if e["kind"] == "observation")
+    tip = next(e for e in entries("proposed") if e["kind"] == "tip")
+    client.post(f"{ENTRIES}/{tip['id']}/review", json={"review": "accepted"})
+
+    assert client.delete(f"{ENTRIES}/{obs['id']}").status_code == 204
+    assert client.delete(f"{ENTRIES}/{tip['id']}").status_code == 204
+    assert client.get(f"{ENTRIES}/{tip['id']}").status_code == 404
+    assert entries("accepted") == [] and entries("proposed") == []
+    assert client.get(ENTRIES, params={"review": "proposed"}).json()["counts"] == {
+        "accepted": 0,
+        "proposed": 0,
+    }
+    # Deleting is idempotent in effect but honest about it.
+    assert client.delete(f"{ENTRIES}/{tip['id']}").status_code == 404
+
+
+def test_a_deleted_entry_does_not_block_the_sessions_next_reflection():
+    client.post(INGEST, json=dream("sess_1", "First.", "T", "B"))
+    tip = next(e for e in entries("proposed") if e["kind"] == "tip")
+    client.delete(f"{ENTRIES}/{tip['id']}")
+    client.post(INGEST, json=dream("sess_1", "Second.", "T2", "B2"))
+    tips = [e for e in entries("proposed") if e["kind"] == "tip"]
+    assert [t["title"] for t in tips] == ["T2"]
+
+
 def test_an_identical_re_push_leaves_an_acceptance_alone():
     """Re-opening a session page re-fires the reflection. Identical content is
     not new information, so it must not churn the queue."""
